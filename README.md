@@ -3,7 +3,7 @@
 A compact, modern HUD card for **World of Warcraft: Classic / WoW Forever** that replaces Blizzard’s default XP and reputation bars with a single movable panel: level, XP, rested, watched faction, session rates, gold, and time-to-level.
 
 **Folder name:** `XiusXPRepTracker`  
-**Interface:** `16001` (Forever)
+**Interface:** `16001` (Forever), `20506` (TBC Classic)  
 **Commands:** `/xt` · `/xiusxp`
 
 ---
@@ -12,7 +12,7 @@ A compact, modern HUD card for **World of Warcraft: Classic / WoW Forever** that
 
 > Sleek XP & reputation HUD card for WoW Classic / Forever. Replaces the default tracking bar with session stats, gold, time-to-level, and a card that expands up or down.
 
-**Topics (suggested):** `world-of-warcraft` `wow-addon` `wow-classic` `forever` `xp` `reputation` `lua`
+**Topics (suggested):** `world-of-warcraft` `wow-addon` `wow-classic` `tbc` `xp` `reputation` `lua`
 
 ---
 
@@ -97,8 +97,8 @@ A **Reset Session** button and a small footer hint sit in the expanded area.
 | Expand stats | Hover the card (default) or left-click (if set to Click) |
 | Move | Unlock, then **Shift + Left-drag** |
 | Resize | Drag the thin grip on the right edge |
-| Reset session | **Reset Session** on the expanded card, or `/fbt reset` |
-| Options | Escape → Options → AddOns → **Xius XP/Rep Tracker**, or `/fbt config` |
+| Reset session | **Reset Session** on the expanded card, or `/xt reset` |
+| Options | Escape → Options → AddOns → **Xius XP/Rep Tracker**, or `/xt config` |
 
 Watch a faction in the Reputation window for the rep bar and rank timers.
 
@@ -108,11 +108,11 @@ Watch a faction in the Reputation window for the rep bar and rank timers.
 
 | Command | Effect |
 |---|---|
-| `/fbt` or `/bar` | Show help |
-| `/fbt config` · `/fbt opt` | Open the options panel |
-| `/fbt lock` | Toggle frame lock |
-| `/fbt unlock` | Unlock the card |
-| `/fbt reset` | Reset session time, XP, gold, and reputation baselines |
+| `/xt` or `/xiusxp` | Show help |
+| `/xt config` · `/xt opt` | Open the options panel |
+| `/xt lock` | Toggle frame lock |
+| `/xt unlock` | Unlock the card |
+| `/xt reset` | Reset session time, XP, gold, and reputation baselines |
 
 ---
 

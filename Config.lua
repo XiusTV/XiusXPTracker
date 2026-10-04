@@ -358,7 +358,7 @@ function FBT:OpenOptions()
         InterfaceOptionsFrame_OpenToCategory(optionsPanel)
         return
     end
-    self:Print("Options panel is not available on this client. Use /fbt lock or /fbt reset.")
+    self:Print("Options panel is not available on this client. Use /xt lock or /xt reset.")
 end
 
 function FBT:HandleSlash(msg)
@@ -381,13 +381,13 @@ function FBT:HandleSlash(msg)
             self:Print("Bar unlocked. Shift-drag to move.")
         end
     else
-        self:Print("Commands: /fbt config  |  /fbt lock  |  /fbt reset")
-        self:Print("Aliases: /bar   /fbt opt")
+        self:Print("Commands: /xt config  |  /xt lock  |  /xt reset")
+        self:Print("Aliases: /xiusxp   /xt opt")
     end
 end
 
-SLASH_FOREVERBARTRACKER1 = "/fbt"
-SLASH_FOREVERBARTRACKER2 = "/bar"
-SlashCmdList.FOREVERBARTRACKER = function(msg)
+SLASH_XIUSXPTRACKER1 = "/xt"
+SLASH_XIUSXPTRACKER2 = "/xiusxp"
+SlashCmdList.XIUSXPTRACKER = function(msg)
     FBT:HandleSlash(msg)
 end
