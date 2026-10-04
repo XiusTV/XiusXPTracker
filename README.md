@@ -3,8 +3,8 @@
 A compact, modern HUD card for **World of Warcraft: Classic / WoW Forever** that replaces Blizzard’s default XP and reputation bars with a single movable panel: level, XP, rested, watched faction, session rates, gold, and time-to-level.
 
 **Folder name:** `XiusXPRepTracker`  
-**Interface:** `16001` (Forever), `20506` (TBC Classic)  
-**Commands:** `/fbt` · `/bar`
+**Interface:** `16001` (Forever)
+**Commands:** `/xt` · `/xiusxp`
 
 ---
 
@@ -12,7 +12,7 @@ A compact, modern HUD card for **World of Warcraft: Classic / WoW Forever** that
 
 > Sleek XP & reputation HUD card for WoW Classic / Forever. Replaces the default tracking bar with session stats, gold, time-to-level, and a card that expands up or down.
 
-**Topics (suggested):** `world-of-warcraft` `wow-addon` `wow-classic` `tbc` `xp` `reputation` `lua`
+**Topics (suggested):** `world-of-warcraft` `wow-addon` `wow-classic` `forever` `xp` `reputation` `lua`
 
 ---
 
