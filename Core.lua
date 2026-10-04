@@ -309,18 +309,6 @@ function FBT:GetWatchedFaction(force)
                 nextReactionThreshold = data.nextReactionThreshold or 0,
             }
         end
-    elseif GetWatchedFactionInfo then
-        local name, standing, barMin, barMax, barValue, factionID = GetWatchedFactionInfo()
-        if name then
-            info = {
-                name = name,
-                factionID = factionID,
-                reaction = standing or 4,
-                currentStanding = barValue or 0,
-                currentReactionThreshold = barMin or 0,
-                nextReactionThreshold = barMax or 0,
-            }
-        end
     end
     if info then
         info.rankName = StandingName(info.reaction)

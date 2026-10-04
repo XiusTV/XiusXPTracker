@@ -1,4 +1,4 @@
-## Interface: 16001, 20506
+## Interface: 16001
 ## Title: Xius XP/Rep Tracker
 ## Notes: HUD card for XP, reputation, and session stats. Replaces the default bar. Type /xt
 ## Author: Xius

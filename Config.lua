@@ -337,8 +337,6 @@ function FBT:CreateOptions()
     if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOnCategory then
         optionsCategory = Settings.RegisterCanvasLayoutCategory(panel, panel.name)
         Settings.RegisterAddOnCategory(optionsCategory)
-    elseif InterfaceOptions_AddCategory then
-        InterfaceOptions_AddCategory(panel)
     end
 end
 
@@ -353,12 +351,7 @@ function FBT:OpenOptions()
         Settings.OpenToCategory(FBT.TITLE)
         return
     end
-    if InterfaceOptionsFrame_OpenToCategory and optionsPanel then
-        InterfaceOptionsFrame_OpenToCategory(optionsPanel)
-        InterfaceOptionsFrame_OpenToCategory(optionsPanel)
-        return
-    end
-    self:Print("Options panel is not available on this client. Use /xt lock or /xt reset.")
+    self:Print("Options panel is not available. Use /xt lock or /xt reset.")
 end
 
 function FBT:HandleSlash(msg)

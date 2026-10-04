@@ -1,18 +1,18 @@
 # Xius XP/Rep Tracker
 
-A compact, modern HUD card for **World of Warcraft: Classic / WoW Forever** that replaces Blizzard’s default XP and reputation bars with a single movable panel: level, XP, rested, watched faction, session rates, gold, and time-to-level.
+A compact HUD card for **World of Warcraft Forever** that replaces the default XP and reputation bars with a single movable panel: level, XP, rested, watched faction, session rates, gold, and time-to-level.
 
 **Folder name:** `XiusXPRepTracker`  
-**Interface:** `16001` (Forever), `20506` (TBC Classic)  
+**Interface:** `16001` (World of Warcraft Forever)  
 **Commands:** `/xt` · `/xiusxp`
 
 ---
 
 ## GitHub About (short)
 
-> Sleek XP & reputation HUD card for WoW Classic / Forever. Replaces the default tracking bar with session stats, gold, time-to-level, and a card that expands up or down.
+> Sleek XP & reputation HUD card for World of Warcraft Forever. Replaces the default tracking bar with session stats, gold, time-to-level, and a card that expands up or down.
 
-**Topics (suggested):** `world-of-warcraft` `wow-addon` `wow-classic` `tbc` `xp` `reputation` `lua`
+**Topics (suggested):** `world-of-warcraft` `wow-forever` `wow-addon` `xp` `reputation` `lua`
 
 ---
 
@@ -53,10 +53,10 @@ A **Reset Session** button and a small footer hint sit in the expanded area.
 - Kills to level (rolling average of the last 5 combat XP gains)
 
 ### Reputation
-- Tracks the **watched** faction (`C_Reputation.GetWatchedFactionData()`, with Classic fallback)
+- Tracks the **watched** faction via `C_Reputation.GetWatchedFactionData()`
 - Thin reputation bar under XP while leveling; switches to reputation at max level if XP is hidden
 - Session reputation, rep / hour, time to next standing
-- Friendship / Best Friend, major-faction Renown, and Paragon when those APIs exist
+- Friendship / Best Friend, Renown, and Paragon when those APIs exist
 
 ### Gold
 - Net gold this session (green when up, red when down)
@@ -71,22 +71,22 @@ A **Reset Session** button and a small footer hint sit in the expanded area.
 - Shift-drag to move (when unlocked)
 - Drag the right edge to resize (600–1200px, default 620px)
 - Position and width saved per account
-- Default Blizzard XP / rep tracking bars are hidden and their events unregistered
+- Default XP / rep tracking bars are hidden and their events unregistered
 
 ---
 
 ## Install
 
 1. Download or clone this repository.
-2. Copy the **`XiusXPRepTracker`** folder into:
-
-   `World of Warcraft\_classic_era_` / `_classic_` / `_classic_beta_\Interface\Addons\`
+2. Copy the **`XiusXPRepTracker`** folder into your World of Warcraft Forever `Interface\AddOns` directory.
 
    The folder must contain `XiusXPRepTracker.toc`, `Config.lua`, and `Core.lua`.
 
 3. Restart the game (or log to character select).
 4. Enable **Xius XP/Rep Tracker** on the AddOns list.
 5. `/reload` once in-game.
+
+This addon is built only for **World of Warcraft Forever** (interface `16001`).
 
 ---
 
@@ -139,14 +139,9 @@ All options default **on**. Saved in `ForeverBarTrackerDB` (account-wide).
 
 ## Compatibility
 
-| Client | TOC interface |
-|---|---|
-| WoW Forever | `16001` |
-| TBC Classic | `20506` |
+World of Warcraft Forever only. TOC interface: `16001`.
 
-Uses modern `C_` APIs where present (`C_Reputation`, `C_Timer`, `Settings`) with Classic fallbacks (`GetWatchedFactionInfo`, `InterfaceOptions_AddCategory`).
-
-Lua 5.1. No external libraries.
+Uses Forever client APIs (`C_Reputation`, `C_Timer`, `Settings`). Lua 5.1. No external libraries.
 
 ---
 
@@ -156,7 +151,7 @@ Lua 5.1. No external libraries.
 XiusXPRepTracker/
 ├── XiusXPRepTracker.toc
 ├── Config.lua      # defaults, saved variables, options panel, slash commands
-├── Core.lua        # HUD card, tracking engine, Blizzard bar replacement
+├── Core.lua        # HUD card, tracking engine, default bar replacement
 └── README.md
 ```
 
