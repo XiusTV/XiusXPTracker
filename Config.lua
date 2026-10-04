@@ -262,8 +262,8 @@ function FBT:CreateOptions()
         end
         SetDBValue("growthDirection", nextMode)
         growthBtn:SetText(GrowthLabel())
-        if FBT.UpdateFrameOrientation then
-            FBT:UpdateFrameOrientation(FBT:ResolveGrowthDirection())
+        if FBT.RestoreCardPosition then
+            FBT:RestoreCardPosition()
         end
     end)
     local growthHint = MakeLabel(content, "Click to cycle. Auto uses the card's position on screen.", "GameFontHighlightSmall", 244, y + 4)

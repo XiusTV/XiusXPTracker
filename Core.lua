@@ -668,44 +668,62 @@ local function SetStat(stat, label, value, shown, color)
     stat:Show()
 end
 
-function FBT:ResolveGrowthDirection()
+function FBT:ResolveGrowthDirection(useLivePosition)
     local mode = self.db and self.db.growthDirection or "AUTO"
     if mode == "UP" or mode == "DOWN" then
         return mode
     end
-    local card = ui.card
-    if not card then
-        return "UP"
+    -- After a real drag, layout coords are valid. On restore/login they are
+    -- not: CreateFrame defaults to CENTER, so GetCenter would pin AUTO to
+    -- the middle of the screen until the lock checkbox reapplied saved points.
+    if useLivePosition and ui.card then
+        local _, centerY = ui.card:GetCenter()
+        if centerY then
+            if centerY < (GetScreenHeight() * 0.5) then
+                return "UP"
+            end
+            return "DOWN"
+        end
     end
-    local _, centerY = card:GetCenter()
-    if not centerY then
-        return "UP"
+    local point = self.db and self.db.point
+    if type(point) == "string" then
+        if string.find(point, "BOTTOM", 1, true) then
+            return "UP"
+        end
+        if string.find(point, "TOP", 1, true) then
+            return "DOWN"
+        end
     end
-    if centerY < (GetScreenHeight() * 0.5) then
-        return "UP"
-    end
-    return "DOWN"
+    return "UP"
 end
 
-function FBT:UpdateFrameOrientation(resolvedDirection)
+-- reanchorCard: true after a real drag (layout coords are valid).
+-- false when restoring saved points so stale GetLeft/GetCenter cannot
+-- overwrite the saved UIParent anchor (the /reload center-screen bug).
+function FBT:UpdateFrameOrientation(resolvedDirection, reanchorCard)
     local card = ui.card
     local header = ui.header
     local stats = ui.stats
     if not card or not header or not stats then
         return
     end
-    resolvedDirection = resolvedDirection or self:ResolveGrowthDirection()
+    resolvedDirection = resolvedDirection or self:ResolveGrowthDirection(reanchorCard and true or false)
+    if resolvedDirection == "AUTO" then
+        resolvedDirection = self:ResolveGrowthDirection(reanchorCard and true or false)
+    end
     ui.growUp = (resolvedDirection == "UP")
     ui.resolvedDirection = resolvedDirection
 
-    local left, right, top, bottom = card:GetLeft(), card:GetRight(), card:GetTop(), card:GetBottom()
-    if left and right and top and bottom then
-        local currentCenterX = (left + right) / 2
-        card:ClearAllPoints()
-        if ui.growUp then
-            card:SetPoint("BOTTOM", UIParent, "BOTTOMLEFT", currentCenterX, bottom)
-        else
-            card:SetPoint("TOP", UIParent, "BOTTOMLEFT", currentCenterX, top)
+    if reanchorCard then
+        local left, right, top, bottom = card:GetLeft(), card:GetRight(), card:GetTop(), card:GetBottom()
+        if left and right and top and bottom then
+            local currentCenterX = (left + right) / 2
+            card:ClearAllPoints()
+            if ui.growUp then
+                card:SetPoint("BOTTOM", UIParent, "BOTTOMLEFT", currentCenterX, bottom)
+            else
+                card:SetPoint("TOP", UIParent, "BOTTOMLEFT", currentCenterX, top)
+            end
         end
     end
 
@@ -762,11 +780,16 @@ local function SavePosition()
     db.width = math.max(MIN_WIDTH, Round(card:GetWidth()))
 end
 
-local function ApplyPosition()
-    local db, card = FBT.db, ui.card
+function FBT:RestoreCardPosition()
+    local db = self.db or ForeverBarTrackerDB
+    local card = ui.card
+    if not db or not card or not db.point then
+        return
+    end
     card:ClearAllPoints()
-    card:SetPoint(db.point or "BOTTOM", UIParent, db.relativePoint or "BOTTOM", db.x or 0, db.y or 0)
+    card:SetPoint(db.point, UIParent, db.relativePoint or db.point, db.x or 0, db.y or 0)
     card:SetWidth(math.max(MIN_WIDTH, Clamp(db.width or CARD_WIDTH, MIN_WIDTH, MAX_WIDTH)))
+    self:UpdateFrameOrientation(self:ResolveGrowthDirection(false), false)
 end
 
 function LayoutStatsGrid()
@@ -1042,8 +1065,7 @@ function FBT:ApplySettings()
     if not ui.card or not self.db then
         return
     end
-    ApplyPosition()
-    self:UpdateFrameOrientation(self:ResolveGrowthDirection())
+    self:RestoreCardPosition()
     if self.db.expandTrigger == "HOVER" and not self:IsHoverOverUI() then
         self:SetExpanded(false)
     end
@@ -1148,7 +1170,7 @@ local function OnCardDragStop()
     end
     ui.moving = false
     ui.card:StopMovingOrSizing()
-    FBT:UpdateFrameOrientation(FBT:ResolveGrowthDirection())
+    FBT:UpdateFrameOrientation(FBT:ResolveGrowthDirection(true), true)
     SavePosition()
 end
 
@@ -1188,6 +1210,9 @@ function FBT:CreateUI()
         card:SetDontSavePosition(true)
     end
     ApplyCardBackdrop(card)
+    -- Do not leave the card at CreateFrame's default CENTER of UIParent.
+    -- RestoreCardPosition immediately overwrites this with SavedVariables.
+    card:SetPoint("BOTTOM", UIParent, "BOTTOM", 0, 0)
 
     local header = CreateFrame("Frame", nil, card)
     header:SetPoint("TOPLEFT", PAD, -PAD)
@@ -1384,8 +1409,7 @@ function FBT:CreateUI()
     stats:SetScript("OnEnter", OnCardEnter)
     stats:SetScript("OnLeave", OnCardLeave)
 
-    ApplyPosition()
-    self:UpdateFrameOrientation(self:ResolveGrowthDirection())
+    self:RestoreCardPosition()
     LayoutStatsGrid()
     card:SetScript("OnSizeChanged", function()
         LayoutStatsGrid()
@@ -1395,6 +1419,11 @@ function FBT:CreateUI()
     end
     self:HideBlizzardTrackingBars()
     self:Refresh()
+    if C_Timer and C_Timer.After then
+        C_Timer.After(0, function()
+            FBT:RestoreCardPosition()
+        end)
+    end
 end
 
 local function OnXPUpdate()
@@ -1447,6 +1476,7 @@ function FBT:RegisterTracking()
             FBT:Refresh()
         elseif event == "PLAYER_ENTERING_WORLD" then
             FBT:HideBlizzardTrackingBars()
+            FBT:RestoreCardPosition()
             FBT:StartSession()
         end
     end)
@@ -1455,6 +1485,7 @@ end
 
 local loader = CreateFrame("Frame")
 loader:RegisterEvent("ADDON_LOADED")
+loader:RegisterEvent("PLAYER_LOGIN")
 loader:SetScript("OnEvent", function(self, event, name)
     if event == "ADDON_LOADED" and name == ADDON then
         FBT:InitDB()
@@ -1462,9 +1493,13 @@ loader:SetScript("OnEvent", function(self, event, name)
         FBT:CreateUI()
         FBT:RegisterTracking()
         FBT:HideBlizzardTrackingBars()
+        FBT:RestoreCardPosition()
         if IsLoggedIn and IsLoggedIn() then
             FBT:StartSession()
         end
         self:UnregisterEvent("ADDON_LOADED")
+    elseif event == "PLAYER_LOGIN" then
+        FBT:RestoreCardPosition()
+        self:UnregisterEvent("PLAYER_LOGIN")
     end
 end)
