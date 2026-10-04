@@ -8,11 +8,9 @@ A compact HUD card for **World of Warcraft Forever** that replaces the default X
 
 ---
 
-## GitHub About (short)
+## About
 
 > Sleek XP & reputation HUD card for World of Warcraft Forever. Replaces the default tracking bar with session stats, gold, time-to-level, and a card that expands up or down.
-
-**Topics (suggested):** `world-of-warcraft` `wow-forever` `wow-addon` `xp` `reputation` `lua`
 
 ---
 
@@ -155,8 +153,3 @@ XiusXPRepTracker/
 └── README.md
 ```
 
----
-
-## License
-
-Personal / public addon. Credit **Xius** if you fork or redistribute.
