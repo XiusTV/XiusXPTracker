@@ -49,6 +49,8 @@ local EXALTED_REMAINING_FROM_STANDING = {
     [8] = 0,
 }
 
+-- Only the dedicated XP/rep tracking bars. Do not touch MainMenuBar overlay
+-- frames or Edit Mode systems (PlayerFrame, Damage Meter) or taint spreads.
 local BLIZZARD_BAR_NAMES = {
     "StatusTrackingBarManager",
     "MainStatusTrackingBarManager",
@@ -59,11 +61,6 @@ local BLIZZARD_BAR_NAMES = {
     "ReputationWatchBar",
     "HonorWatchBar",
     "ArtifactWatchBar",
-    "ExhaustionTick",
-    "ExhaustionLevelFillBar",
-    "MainMenuBarExpText",
-    "MainMenuBarMaxLevelBar",
-    "MainMenuBarOverlayFrame",
 }
 
 local PORTRAIT_MASK = "Interface\\CharacterFrame\\TempPortraitAlphaMask"
@@ -81,7 +78,28 @@ local watchedCache
 local watchedCacheTime = 0
 local LayoutStatsGrid
 
+local function PublicNumber(v, fallback)
+    if v == nil then
+        return fallback or 0
+    end
+    if issecretvalue and issecretvalue(v) then
+        return fallback or 0
+    end
+    return v
+end
+
+local function PublicString(v, fallback)
+    if type(v) ~= "string" then
+        return fallback
+    end
+    if issecretvalue and issecretvalue(v) then
+        return fallback
+    end
+    return v
+end
+
 local function Clamp(v, minV, maxV)
+    v = PublicNumber(v, minV)
     if v < minV then
         return minV
     end
@@ -189,16 +207,16 @@ end
 
 local function GetPlayerMaxLevel()
     if GetMaxLevelForPlayerExpansion then
-        return GetMaxLevelForPlayerExpansion()
+        return PublicNumber(GetMaxLevelForPlayerExpansion(), 70)
     end
     if GetMaxLevelForLatestExpansion then
-        return GetMaxLevelForLatestExpansion()
+        return PublicNumber(GetMaxLevelForLatestExpansion(), 70)
     end
-    return MAX_PLAYER_LEVEL or 70
+    return PublicNumber(MAX_PLAYER_LEVEL, 70)
 end
 
 local function IsPlayerMaxLevel()
-    return UnitLevel("player") >= GetPlayerMaxLevel()
+    return PublicNumber(UnitLevel("player"), 1) >= GetPlayerMaxLevel()
 end
 
 local function StandingName(reaction)
@@ -214,15 +232,18 @@ local function ApplyFriendship(info)
         return info
     end
     local friend = gossip.GetFriendshipReputation(info.factionID)
-    if not friend or (friend.friendshipFactionID or 0) == 0 then
+    if not friend then
+        return info
+    end
+    if PublicNumber(friend.friendshipFactionID, 0) == 0 then
         return info
     end
     info.isFriendship = true
-    info.rankName = friend.reaction or info.rankName
-    info.maxRep = friend.maxRep
-    local standing = friend.standing or info.currentStanding
-    local thresh = friend.reactionThreshold or 0
-    local nextT = friend.nextThreshold or 0
+    info.rankName = PublicString(friend.reaction, info.rankName) or info.rankName
+    info.maxRep = PublicNumber(friend.maxRep, info.maxRep or 0)
+    local standing = PublicNumber(friend.standing, info.currentStanding)
+    local thresh = PublicNumber(friend.reactionThreshold, 0)
+    local nextT = PublicNumber(friend.nextThreshold, 0)
     info.currentStanding = standing
     if nextT == 0 then
         info.currentReactionThreshold = thresh
@@ -249,14 +270,14 @@ local function ApplyMajorFaction(info)
         return info
     end
     info.isMajorFaction = true
-    info.renownLevel = data.renownLevel or 0
-    info.maxRenownLevel = data.maxRenownLevel or 0
+    info.renownLevel = PublicNumber(data.renownLevel, 0)
+    info.maxRenownLevel = PublicNumber(data.maxRenownLevel, 0)
     if MF.GetCurrentRenownLevel and info.renownLevel == 0 then
-        info.renownLevel = MF.GetCurrentRenownLevel(info.factionID) or info.renownLevel
+        info.renownLevel = PublicNumber(MF.GetCurrentRenownLevel(info.factionID), info.renownLevel)
     end
-    info.currentStanding = data.renownReputationEarned or 0
+    info.currentStanding = PublicNumber(data.renownReputationEarned, 0)
     info.currentReactionThreshold = 0
-    info.nextReactionThreshold = data.renownLevelThreshold or 1
+    info.nextReactionThreshold = PublicNumber(data.renownLevelThreshold, 1)
     info.rankName = "Renown " .. tostring(info.renownLevel)
     if MF.HasMaximumRenown then
         info.isMaxRank = MF.HasMaximumRenown(info.factionID) and true or false
@@ -278,6 +299,8 @@ local function ApplyParagon(info)
         return info
     end
     local currentValue, threshold = R.GetFactionParagonInfo(info.factionID)
+    currentValue = PublicNumber(currentValue, nil)
+    threshold = PublicNumber(threshold, nil)
     if not currentValue or not threshold or threshold <= 0 then
         return info
     end
@@ -299,15 +322,18 @@ function FBT:GetWatchedFaction(force)
     local R = C_Reputation
     if R and R.GetWatchedFactionData then
         local data = R.GetWatchedFactionData()
-        if data and data.name then
-            info = {
-                name = data.name,
-                factionID = data.factionID,
-                reaction = data.reaction or 4,
-                currentStanding = data.currentStanding or 0,
-                currentReactionThreshold = data.currentReactionThreshold or 0,
-                nextReactionThreshold = data.nextReactionThreshold or 0,
-            }
+        if data then
+            local name = PublicString(data.name, nil)
+            if name then
+                info = {
+                    name = name,
+                    factionID = PublicNumber(data.factionID, 0),
+                    reaction = PublicNumber(data.reaction, 4),
+                    currentStanding = PublicNumber(data.currentStanding, 0),
+                    currentReactionThreshold = PublicNumber(data.currentReactionThreshold, 0),
+                    nextReactionThreshold = PublicNumber(data.nextReactionThreshold, 0),
+                }
+            end
         end
     end
     if info then
@@ -403,6 +429,7 @@ local function AddKillXP(amount)
 end
 
 local function ParseCombatXP(msg)
+    msg = PublicString(msg, nil)
     if type(msg) ~= "string" then
         return nil
     end
@@ -411,9 +438,9 @@ local function ParseCombatXP(msg)
 end
 
 local function SnapshotXP()
-    session.lastXP = UnitXP("player") or 0
-    session.lastXPMax = UnitXPMax("player") or 1
-    session.lastLevel = UnitLevel("player") or 1
+    session.lastXP = PublicNumber(UnitXP("player"), session.lastXP or 0)
+    session.lastXPMax = PublicNumber(UnitXPMax("player"), session.lastXPMax or 1)
+    session.lastLevel = PublicNumber(UnitLevel("player"), session.lastLevel or 1)
 end
 
 local function CacheFactionBaseline(force)
@@ -467,38 +494,24 @@ local function FrameIsMouseOver(frame)
     return x >= left and x <= right and y >= bottom and y <= top
 end
 
+-- Hide default XP/rep bars from *our* code only. Never hook Show/SetShown and
+-- never replace Blizzard methods: those taint Edit Mode and Damage Meter.
 local function SuppressBlizzardFrame(frame)
     if not frame then
         return
     end
-    if frame.UnregisterAllEvents then
-        frame:UnregisterAllEvents()
-    end
-    frame:Hide()
-    frame:SetAlpha(0)
-    if frame.EnableMouse then
-        frame:EnableMouse(false)
+    if frame.IsShown and frame:IsShown() then
+        frame:Hide()
+    elseif not frame.IsShown then
+        frame:Hide()
     end
     if frame.__fbtSuppressed then
         return
     end
     frame.__fbtSuppressed = true
-    hooksecurefunc(frame, "Show", function(self)
-        if self.__fbtHiding then
-            return
-        end
-        self.__fbtHiding = true
-        self:Hide()
-        self.__fbtHiding = false
-    end)
-    if frame.SetShown then
-        hooksecurefunc(frame, "SetShown", function(self, shown)
-            if shown and not self.__fbtHiding then
-                self.__fbtHiding = true
-                self:Hide()
-                self.__fbtHiding = false
-            end
-        end)
+    frame:SetAlpha(0)
+    if frame.EnableMouse then
+        frame:EnableMouse(false)
     end
 end
 
@@ -509,10 +522,6 @@ function FBT:HideBlizzardTrackingBars()
     local manager = _G.StatusTrackingBarManager or _G.MainStatusTrackingBarManager
     if manager then
         SuppressBlizzardFrame(manager)
-        manager.UpdateBarsShown = function() end
-        if manager.UpdateBarTicks then
-            manager.UpdateBarTicks = function() end
-        end
         if manager.bars then
             for _, bar in pairs(manager.bars) do
                 SuppressBlizzardFrame(bar)
@@ -527,9 +536,6 @@ function FBT:HideBlizzardTrackingBars()
         local container = containers[i]
         if container then
             SuppressBlizzardFrame(container)
-            if container.UpdateShownState then
-                container.UpdateShownState = function() end
-            end
             if container.bars then
                 for _, bar in pairs(container.bars) do
                     SuppressBlizzardFrame(bar)
@@ -922,15 +928,15 @@ function FBT:RefreshHeader()
         return
     end
     local db = self.db
-    ui.levelText:SetText(tostring(UnitLevel("player") or 0))
+    ui.levelText:SetText(tostring(PublicNumber(UnitLevel("player"), 0)))
 
     local showXP = ShouldShowXP(db)
     local info = self:GetWatchedFaction()
     local showRep = ShouldShowRep(db)
 
     if showXP then
-        local current = UnitXP("player") or 0
-        local maxXP = UnitXPMax("player") or 1
+        local current = PublicNumber(UnitXP("player"), 0)
+        local maxXP = PublicNumber(UnitXPMax("player"), 1)
         if maxXP <= 0 then
             maxXP = 1
         end
@@ -945,7 +951,7 @@ function FBT:RefreshHeader()
             ui.leftLabel:SetText("Experience  Max Level")
             ui.rightPct:SetText("100%")
         else
-            LayoutRest(ui.xpBar, current, GetXPExhaustion and GetXPExhaustion() or 0, maxXP)
+            LayoutRest(ui.xpBar, current, PublicNumber(GetXPExhaustion and GetXPExhaustion() or 0, 0), maxXP)
         end
     elseif showRep and info then
         local cur = (info.currentStanding or 0) - (info.currentReactionThreshold or 0)
@@ -1004,10 +1010,10 @@ function FBT:RefreshStats()
     local db = self.db
     local elapsed = SessionElapsed()
     local xpPerHour = RatePerHour(session.xpEarned or 0, elapsed)
-    local goldDelta = (GetMoney() or 0) - (session.startMoney or 0)
+    local goldDelta = PublicNumber(GetMoney(), session.startMoney or 0) - (session.startMoney or 0)
     local goldPerHour = RatePerHour(goldDelta, elapsed)
-    local currentXP = UnitXP("player") or 0
-    local maxXP = UnitXPMax("player") or 1
+    local currentXP = PublicNumber(UnitXP("player"), session.lastXP or 0)
+    local maxXP = PublicNumber(UnitXPMax("player"), session.lastXPMax or 1)
     local xpLeft = math.max(0, maxXP - currentXP)
     local ttl = TimeFromRate(xpLeft, xpPerHour)
     local avgKill = AverageKillXP()
@@ -1017,7 +1023,7 @@ function FBT:RefreshStats()
     elseif IsPlayerMaxLevel() then
         ktl = "Max"
     end
-    local restXP = GetXPExhaustion and GetXPExhaustion() or 0
+    local restXP = PublicNumber(GetXPExhaustion and GetXPExhaustion() or 0, 0)
     local restText = "0 (0%)"
     if restXP and restXP > 0 and maxXP > 0 then
         restText = string.format("%s (%s)", FormatCompact(restXP), FormatPercent(restXP, maxXP))
@@ -1054,7 +1060,6 @@ function FBT:RefreshStats()
 end
 
 function FBT:Refresh()
-    self:HideBlizzardTrackingBars()
     self:RefreshHeader()
     if ui.expanded or (ui.stats and ui.stats:IsShown()) then
         self:RefreshStats()
@@ -1093,7 +1098,7 @@ function FBT:ResetSession()
     session.startTime = GetTime()
     session.xpEarned = 0
     session.killXP = {}
-    session.startMoney = GetMoney() or 0
+    session.startMoney = PublicNumber(GetMoney(), 0)
     SnapshotXP()
     CacheFactionBaseline(true)
     self:Print("Session timers, XP, gold, and reputation baselines have been reset.")
@@ -1112,13 +1117,14 @@ function FBT:StartSession()
     session.startTime = GetTime()
     session.xpEarned = 0
     session.killXP = {}
-    session.startMoney = GetMoney() or 0
+    session.startMoney = PublicNumber(GetMoney(), 0)
     SnapshotXP()
     CacheFactionBaseline(true)
     if ticker then
         ticker:Cancel()
     end
     ticker = C_Timer.NewTicker(1.0, function()
+        FBT:HideBlizzardTrackingBars()
         if ui.expanded then
             FBT:RefreshStats()
         end
@@ -1430,9 +1436,9 @@ local function OnXPUpdate()
     if not session.active then
         return
     end
-    local xp = UnitXP("player") or 0
-    local level = UnitLevel("player") or 1
-    local maxXP = UnitXPMax("player") or 1
+    local xp = PublicNumber(UnitXP("player"), session.lastXP or 0)
+    local level = PublicNumber(UnitLevel("player"), session.lastLevel or 1)
+    local maxXP = PublicNumber(UnitXPMax("player"), session.lastXPMax or 1)
     if level > (session.lastLevel or level) then
         session.xpEarned = (session.xpEarned or 0) + math.max(0, (session.lastXPMax or 0) - (session.lastXP or 0)) + xp
     elseif xp > (session.lastXP or 0) then
@@ -1453,6 +1459,12 @@ function FBT:RegisterTracking()
     f:RegisterEvent("CHAT_MSG_COMBAT_XP_GAIN")
     f:RegisterEvent("PLAYER_ENTERING_WORLD")
     f:RegisterEvent("PLAYER_UPDATE_RESTING")
+    f:RegisterEvent("PLAYER_REGEN_ENABLED")
+    if C_EventUtils and C_EventUtils.IsEventValid and C_EventUtils.IsEventValid("EDIT_MODE_LAYOUT_UPDATED") then
+        f:RegisterEvent("EDIT_MODE_LAYOUT_UPDATED")
+    else
+        pcall(f.RegisterEvent, f, "EDIT_MODE_LAYOUT_UPDATED")
+    end
     f:SetScript("OnEvent", function(_, event, ...)
         if event == "PLAYER_XP_UPDATE" or event == "PLAYER_LEVEL_UP" then
             OnXPUpdate()
@@ -1478,6 +1490,8 @@ function FBT:RegisterTracking()
             FBT:HideBlizzardTrackingBars()
             FBT:RestoreCardPosition()
             FBT:StartSession()
+        elseif event == "PLAYER_REGEN_ENABLED" or event == "EDIT_MODE_LAYOUT_UPDATED" then
+            FBT:HideBlizzardTrackingBars()
         end
     end)
     self.eventFrame = f
