@@ -1,18 +1,6 @@
 # Xius XP/Rep Tracker
 
-A compact HUD card for **World of Warcraft Forever** that replaces the default XP and reputation bars with a single movable panel: level, XP, rested, watched faction, session rates, gold, and time-to-level.
-
-**Folder name:** `XiusXPRepTracker`  
-**Interface:** `16001` (World of Warcraft Forever)  
-**Commands:** `/xt` · `/xiusxp`
-
----
-
-## GitHub About (short)
-
-> Sleek XP & reputation HUD card for World of Warcraft Forever. Replaces the default tracking bar with session stats, gold, time-to-level, and a card that expands up or down.
-
-**Topics (suggested):** `world-of-warcraft` `wow-forever` `wow-addon` `xp` `reputation` `lua`
+A compact HUD card that replaces the default XP and reputation bars with a single movable panel: level, XP, rested, watched faction, session rates, gold, and time-to-level.
 
 ---
 
@@ -78,7 +66,7 @@ A **Reset Session** button and a small footer hint sit in the expanded area.
 ## Install
 
 1. Download or clone this repository.
-2. Copy the **`XiusXPRepTracker`** folder into your World of Warcraft Forever `Interface\AddOns` directory.
+2. Copy the **`XiusXPRepTracker`** folder into `Interface\AddOns`.
 
    The folder must contain `XiusXPRepTracker.toc`, `Config.lua`, and `Core.lua`.
 
@@ -86,7 +74,11 @@ A **Reset Session** button and a small footer hint sit in the expanded area.
 4. Enable **Xius XP/Rep Tracker** on the AddOns list.
 5. `/reload` once in-game.
 
-This addon is built only for **World of Warcraft Forever** (interface `16001`).
+**Folder name:** `XiusXPRepTracker`  
+**Interface:** `16001`  
+**Commands:** `/xt` · `/xiusxp`
+
+This addon is built only for **World of Warcraft Forever**. Lua 5.1, no external libraries.
 
 ---
 
@@ -137,14 +129,6 @@ All options default **on**. Saved in `ForeverBarTrackerDB` (account-wide).
 
 ---
 
-## Compatibility
-
-World of Warcraft Forever only. TOC interface: `16001`.
-
-Uses Forever client APIs (`C_Reputation`, `C_Timer`, `Settings`). Lua 5.1. No external libraries.
-
----
-
 ## Files
 
 ```
@@ -159,16 +143,18 @@ XiusXPRepTracker/
 
 ## More From Xius
 
-**Xius Threat Meter**: A clean, lightweight threat meter. Shows who is on the enemy's threat table, how much threat each player and pet has, and warns you before you pull aggro.
-[GitHub](https://github.com/XiusTV/XiusThreatMeter) · [CurseForge](https://www.curseforge.com/wow/addons/xius-threat-meter)
+**[Xius Threat Meter](https://github.com/XiusTV/XiusThreatMeter)** ([CurseForge](https://www.curseforge.com/wow/addons/xius-threat-meter), awaiting approval): A clean, lightweight threat meter. Shows who is on the enemy's threat table, how much threat each player and pet has, and warns you before you pull aggro.
 
-**Xius Marks Bar**: A compact raid marking bar. Click the flag for world markers or the star for target markers, with 5 / 10 / 20 pull timers, ready check, and role check built in.
-[GitHub](https://github.com/XiusTV/XiusMarksBar) · [CurseForge](https://www.curseforge.com/wow/addons/xius-marks-bar)
+**[Xius Marks Bar](https://github.com/XiusTV/XiusMarksBar)** ([CurseForge](https://www.curseforge.com/wow/addons/xius-marks-bar), awaiting approval): A compact raid marking bar. Click the flag for world markers or the star for target markers, with 5 / 10 / 20 pull timers, ready check, and role check built in.
 
-All Xius addons are built for World of Warcraft Forever and share the same clean, dark gold style for a unified UI.
+All Xius addons share the same clean, dark gold style for a unified UI.
 
 ---
 
 ## License
 
 Personal / public addon. Credit **Xius** if you fork or redistribute.
+
+## Development & AI Disclosure
+
+This addon was built and refactored with the assistance of AI development tools (Cursor / LLMs) for code generation, UI layout structure, and math logic, with manual architecture, in-game verification, and maintenance by Xius.
