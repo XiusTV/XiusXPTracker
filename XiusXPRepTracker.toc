@@ -1,8 +1,8 @@
 ## Interface: 16001
 ## Title: Xius XP/Rep Tracker
-## Notes: HUD card for XP, reputation, and session stats. Replaces the default bar. Type /xt
+## Notes: HUD card for XP, reputation, and session stats. Hover expand or separate box. Type /xt
 ## Author: Xius
-## Version: 1.2.0
+## Version: 1.3.4
 ## SavedVariables: ForeverBarTrackerDB
 
 Config.lua

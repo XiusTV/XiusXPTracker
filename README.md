@@ -1,98 +1,47 @@
 # Xius XP/Rep Tracker
 
-A compact HUD card that replaces the default XP and reputation bars with a single movable panel: level, XP, rested, watched faction, session rates, gold, and time-to-level.
+A compact HUD card for **World of Warcraft Forever** that replaces the default XP and reputation bars with a movable panel: level, XP, rested, watched faction, session rates, gold, time-to-level, kills-to-level, and quests-to-level.
+
+**Folder name:** `XiusXPRepTracker`  
+**Interface:** `16001`  
+**Commands:** `/xt` · `/xiusxp`  
+**Version:** `1.3.4`
 
 ---
 
 ## What it does
 
-Xius XP/Rep Tracker hides the stock XP / reputation tracking bars and puts a dark gold-bordered **HUD card** at the bottom of the screen (the same place as the default XP bar).
+Hides the stock XP / reputation tracking bars and shows a dark meter-style **HUD card**.
 
-**Collapsed (~48px)** shows only the header:
+**Collapsed** shows level, XP (or watched reputation), percent, and thin progress bars.
 
-- Gold double-ring **level badge**
-- Label: `Experience current / max` (or the watched faction name)
-- Gold **percentage**
-- Thin purple XP bar with amber **rested** fill past current XP
-- Optional 6px blue **reputation** bar under XP when a faction is watched
+**Stats** can appear in two ways:
 
-**Expanded (~165px)** smoothly grows the same frame (no separate popup) and reveals:
+1. **On the XP/rep card (default)** — hover or click to expand
+2. **Separate stats box** — always-visible compact panel; the XP/rep card stays collapsed
 
-| Column | Stats |
-|---|---|
-| 1 | Session XP, Session Time |
-| 2 | Rested XP, Time to Level |
-| 3 | XP / Hour, Kills to Level |
-| 4 | Gold / Hour, Session Gold |
-| 5 | Rep / Hour, Next Rank |
-
-A **Reset Session** button and a small footer hint sit in the expanded area.
+Tracked metrics include session XP/time, rested, time to level, XP/hour, kills to level, **quests to level**, gold, and reputation rates.
 
 ---
 
 ## Features
 
-### XP & leveling
-- Live XP bar with current / max and percent
-- Rested XP overlay on the bar and in the stats grid
-- Session XP earned
-- XP per hour
-- Time to next level (from session rate)
-- Kills to level (rolling average of the last 5 combat XP gains)
-
-### Reputation
-- Tracks the **watched** faction via `C_Reputation.GetWatchedFactionData()`
-- Thin reputation bar under XP while leveling; switches to reputation at max level if XP is hidden
-- Session reputation, rep / hour, time to next standing
-- Friendship / Best Friend, Renown, and Paragon when those APIs exist
-
-### Gold
-- Net gold this session (green when up, red when down)
-- Gold per hour, using standard coin textures
-
-### HUD behavior
-- **One frame** — height animates 48px → 165px instead of a detached drawer
-- **Hover** or **click** to expand (configurable)
-- **Growth direction:** Auto (by screen position), always up, or always down
-- Auto: bottom half of the screen grows **up**; top half grows **down**
-- Header stays on the anchored edge so the XP bar does not jump
-- Shift-drag to move (when unlocked)
-- Drag the right edge to resize (600–1200px, default 620px)
-- Position and width saved per account
-- Default XP / rep tracking bars are hidden and their events unregistered
+- Live XP bar with rested overlay
+- Watched faction reputation (Friendship / Renown / Paragon when available)
+- Session gold and gold per hour
+- Kills to level and quests to level estimates
+- Optional separate movable stats box (`/xt panel`)
+- Gear icon or right-click to open settings
+- Shift + Left-drag to move when unlocked
+- Account-wide saved position and options
 
 ---
 
 ## Install
 
-1. Download or clone this repository.
-2. Copy the **`XiusXPRepTracker`** folder into `Interface\AddOns`.
-
-   The folder must contain `XiusXPRepTracker.toc`, `Config.lua`, and `Core.lua`.
-
-3. Restart the game (or log to character select).
-4. Enable **Xius XP/Rep Tracker** on the AddOns list.
-5. `/reload` once in-game.
-
-**Folder name:** `XiusXPRepTracker`  
-**Interface:** `16001`  
-**Commands:** `/xt` · `/xiusxp`
-
-This addon is built only for **World of Warcraft Forever**. Lua 5.1, no external libraries.
-
----
-
-## Usage
-
-| Action | How |
-|---|---|
-| Expand stats | Hover the card (default) or left-click (if set to Click) |
-| Move | Unlock, then **Shift + Left-drag** |
-| Resize | Drag the thin grip on the right edge |
-| Reset session | **Reset Session** on the expanded card, or `/xt reset` |
-| Options | Escape → Options → AddOns → **Xius XP/Rep Tracker**, or `/xt config` |
-
-Watch a faction in the Reputation window for the rep bar and rank timers.
+1. Download a release zip (or clone this repository).
+2. Put the **`XiusXPRepTracker`** folder in `Interface\AddOns`.
+3. Enable the addon and `/reload`.
 
 ---
 
@@ -100,61 +49,14 @@ Watch a faction in the Reputation window for the rep bar and rank timers.
 
 | Command | Effect |
 |---|---|
-| `/xt` or `/xiusxp` | Show help |
-| `/xt config` · `/xt opt` | Open the options panel |
-| `/xt lock` | Toggle frame lock |
-| `/xt unlock` | Unlock the card |
-| `/xt reset` | Reset session time, XP, gold, and reputation baselines |
-
----
-
-## Settings
-
-All options default **on**. Saved in `ForeverBarTrackerDB` (account-wide).
-
-**Expansion**
-- Hover to expand / Click to expand
-- Direction: Auto (screen position) · Always Expand Up · Always Expand Down
-
-**Bars & position**
-- Lock card (blocks Shift-drag and resize)
-- Show XP bar (hides at max level if reputation is shown)
-- Show reputation bar
-- Reset Session / Reset Position buttons
-
-**Card stats (toggle each row)**
-- Session duration, XP / Hour, Time to Level, Kills to Level
-- Gold session, Gold / Hour, Rested XP
-- Reputation session, Rep / Hour, Time until next rank, Time until Exalted / Best Friend / Max
-
----
-
-## Files
-
-```
-XiusXPRepTracker/
-├── XiusXPRepTracker.toc
-├── Config.lua      # defaults, saved variables, options panel, slash commands
-├── Core.lua        # HUD card, tracking engine, default bar replacement
-└── README.md
-```
-
----
-
-## More From Xius
-
-**[Xius Threat Meter](https://github.com/XiusTV/XiusThreatMeter)** ([CurseForge](https://www.curseforge.com/wow/addons/xius-threat-meter), awaiting approval): A clean, lightweight threat meter. Shows who is on the enemy's threat table, how much threat each player and pet has, and warns you before you pull aggro.
-
-**[Xius Marks Bar](https://github.com/XiusTV/XiusMarksBar)** ([CurseForge](https://www.curseforge.com/wow/addons/xius-marks-bar), awaiting approval): A compact raid marking bar. Click the flag for world markers or the star for target markers, with 5 / 10 / 20 pull timers, ready check, and role check built in.
-
-All Xius addons share the same clean, dark gold style for a unified UI.
+| `/xt` · `/xiusxp` | Help |
+| `/xt config` | Options |
+| `/xt panel` | Toggle separate stats box |
+| `/xt lock` · `/xt unlock` | Lock / unlock |
+| `/xt reset` | Reset session baselines |
 
 ---
 
 ## License
 
 Personal / public addon. Credit **Xius** if you fork or redistribute.
-
-## Development & AI Disclosure
-
-This addon was built and refactored with the assistance of AI development tools (Cursor / LLMs) for code generation, UI layout structure, and math logic, with manual architecture, in-game verification, and maintenance by Xius.

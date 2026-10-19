@@ -9,10 +9,13 @@ _G.ForeverBarTracker = FBT
 
 FBT.ADDON = ADDON
 FBT.TITLE = "Xius XP/Rep Tracker"
-FBT.DB_VERSION = 4
+FBT.DB_VERSION = 6
 
 FBT.defaults = {
-    dbVersion = 4,
+    dbVersion = 6,
+    -- EMBEDDED = stats expand on the XP/rep card (hover/click).
+    -- SEPARATE = always-on movable stats box; card stays collapsed.
+    statsDisplayMode = "EMBEDDED",
     expandTrigger = "HOVER",
     showXPBar = true,
     showRepBar = true,
@@ -20,6 +23,7 @@ FBT.defaults = {
     showXPHour = true,
     showTTL = true,
     showKTL = true,
+    showQTL = true,
     showGoldSession = true,
     showGoldHour = true,
     showRested = true,
@@ -33,7 +37,13 @@ FBT.defaults = {
     relativePoint = "BOTTOM",
     x = 0,
     y = 0,
-    width = 620,
+    width = 720,
+    panelPoint = "CENTER",
+    panelRelativePoint = "CENTER",
+    panelX = 0,
+    panelY = 80,
+    panelWidth = 340,
+    panelLocked = false,
 }
 
 local optionWidgets = {}
@@ -63,6 +73,9 @@ function FBT:InitDB()
     ForeverBarTrackerDB = CopyDefaults(self.defaults, ForeverBarTrackerDB)
     self.db = ForeverBarTrackerDB
     local db = self.db
+    if db.statsDisplayMode ~= "SEPARATE" then
+        db.statsDisplayMode = "EMBEDDED"
+    end
     if db.expandTrigger ~= "CLICK" then
         db.expandTrigger = "HOVER"
     end
@@ -71,6 +84,27 @@ function FBT:InitDB()
     end
     if type(db.width) ~= "number" then
         db.width = self.defaults.width
+    end
+    if type(db.panelWidth) ~= "number" then
+        db.panelWidth = self.defaults.panelWidth
+    end
+    if type(db.panelX) ~= "number" then
+        db.panelX = self.defaults.panelX
+    end
+    if type(db.panelY) ~= "number" then
+        db.panelY = self.defaults.panelY
+    end
+    if db.panelPoint == nil then
+        db.panelPoint = self.defaults.panelPoint
+    end
+    if db.panelRelativePoint == nil then
+        db.panelRelativePoint = self.defaults.panelRelativePoint
+    end
+    if db.panelLocked == nil then
+        db.panelLocked = false
+    end
+    if db.showQTL == nil then
+        db.showQTL = true
     end
 
     local version = tonumber(db.dbVersion) or 1
@@ -81,16 +115,31 @@ function FBT:InitDB()
     end
     if version < 4 then
         if (db.width or 0) < 600 then
-            db.width = 620
+            db.width = 720
         end
-        db.dbVersion = 4
     end
-    db.width = math.max(600, math.min(1200, db.width))
+    if version < 5 then
+        db.statsDisplayMode = db.statsDisplayMode or "EMBEDDED"
+        if db.showQTL == nil then
+            db.showQTL = true
+        end
+        if (db.width or 0) < 660 then
+            db.width = 720
+        end
+    end
+    if version < 6 then
+        -- Older builds used a full-width empty panel; shrink to the compact box.
+        db.panelWidth = 340
+        db.panelY = db.panelY or 80
+        db.dbVersion = 6
+    end
+    db.width = math.max(660, math.min(1200, db.width))
+    db.panelWidth = math.max(280, math.min(520, db.panelWidth))
 end
 
-function FBT:NotifySettingsChanged()
+function FBT:NotifySettingsChanged(key)
     if self.ApplySettings then
-        self:ApplySettings()
+        self:ApplySettings(key)
     end
 end
 
@@ -104,7 +153,7 @@ local function SetDBValue(key, value)
         return
     end
     db[key] = value
-    FBT:NotifySettingsChanged()
+    FBT:NotifySettingsChanged(key)
 end
 
 local function MakeCheck(parent, label, key, x, y)
@@ -152,7 +201,11 @@ local function SyncOptionsPanel()
             }
             widget:SetText(labels[db.growthDirection or "AUTO"] or labels.AUTO)
         elseif widget.IsObjectType and widget:IsObjectType("CheckButton") then
-            if key == "expandHover" then
+            if key == "modeEmbedded" then
+                widget:SetChecked(db.statsDisplayMode ~= "SEPARATE")
+            elseif key == "modeSeparate" then
+                widget:SetChecked(db.statsDisplayMode == "SEPARATE")
+            elseif key == "expandHover" then
                 widget:SetChecked(db.expandTrigger ~= "CLICK")
             elseif key == "expandClick" then
                 widget:SetChecked(db.expandTrigger == "CLICK")
@@ -178,7 +231,7 @@ function FBT:CreateOptions()
     scroll:SetPoint("BOTTOMRIGHT", -28, 8)
 
     local content = CreateFrame("Frame", nil, scroll)
-    content:SetSize(540, 820)
+    content:SetSize(540, 980)
     scroll:SetScrollChild(content)
 
     local y = -12
@@ -186,16 +239,53 @@ function FBT:CreateOptions()
     y = y - 28
     local sub = MakeLabel(
         content,
-        "Replaces the default XP/rep bar with a single HUD card. Shift-drag to move when unlocked. Hover or click expands the card; it grows up or down to stay on screen.",
+        "Replaces the default XP/rep bar with a HUD card. Stats can expand on the card (default) or live in a separate movable box. Shift-drag to move when unlocked.",
         "GameFontHighlightSmall",
         16,
         y
     )
     sub:SetWidth(500)
     sub:SetJustifyH("LEFT")
-    y = y - 40
+    y = y - 44
 
-    MakeLabel(content, "Expansion", "GameFontNormal", 16, y)
+    MakeLabel(content, "Stats Display", "GameFontNormal", 16, y)
+    y = y - 22
+
+    local modeEmbedded = CreateFrame("CheckButton", nil, content, "UICheckButtonTemplate")
+    modeEmbedded:SetPoint("TOPLEFT", 12, y)
+    local modeEmbeddedText = modeEmbedded.Text or modeEmbedded:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    modeEmbedded.Text = modeEmbeddedText
+    modeEmbeddedText:ClearAllPoints()
+    modeEmbeddedText:SetPoint("LEFT", modeEmbedded, "RIGHT", 4, 0)
+    modeEmbeddedText:SetText("On XP/rep card (hover or click)")
+    optionWidgets.modeEmbedded = modeEmbedded
+
+    y = y - 26
+    local modeSeparate = CreateFrame("CheckButton", nil, content, "UICheckButtonTemplate")
+    modeSeparate:SetPoint("TOPLEFT", 12, y)
+    local modeSeparateText = modeSeparate.Text or modeSeparate:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    modeSeparate.Text = modeSeparateText
+    modeSeparateText:ClearAllPoints()
+    modeSeparateText:SetPoint("LEFT", modeSeparate, "RIGHT", 4, 0)
+    modeSeparateText:SetText("Separate stats box (always visible)")
+    optionWidgets.modeSeparate = modeSeparate
+
+    local function SetStatsDisplayMode(mode)
+        if syncingOptions then
+            return
+        end
+        SetDBValue("statsDisplayMode", mode)
+        SyncOptionsPanel()
+    end
+    modeEmbedded:SetScript("OnClick", function()
+        SetStatsDisplayMode("EMBEDDED")
+    end)
+    modeSeparate:SetScript("OnClick", function()
+        SetStatsDisplayMode("SEPARATE")
+    end)
+
+    y = y - 36
+    MakeLabel(content, "Card Expansion (when stats are on the XP/rep card)", "GameFontNormal", 16, y)
     y = y - 22
 
     local hover = CreateFrame("CheckButton", nil, content, "UICheckButtonTemplate")
@@ -262,9 +352,6 @@ function FBT:CreateOptions()
         end
         SetDBValue("growthDirection", nextMode)
         growthBtn:SetText(GrowthLabel())
-        if FBT.RestoreCardPosition then
-            FBT:RestoreCardPosition()
-        end
     end)
     local growthHint = MakeLabel(content, "Click to cycle. Auto uses the card's position on screen.", "GameFontHighlightSmall", 244, y + 4)
     growthHint:SetWidth(260)
@@ -272,16 +359,18 @@ function FBT:CreateOptions()
     y = y - 36
     MakeLabel(content, "Bars & Position", "GameFontNormal", 16, y)
     y = y - 28
-    MakeCheck(content, "Lock card position (prevents Shift-drag and resizing)", "isLocked", 12, y)
+    MakeCheck(content, "Lock XP/rep card (prevents Shift-drag and resizing)", "isLocked", 12, y)
+    y = y - 28
+    MakeCheck(content, "Lock separate stats box", "panelLocked", 12, y)
     y = y - 28
     MakeCheck(content, "Show XP bar (hides at max level if reputation is shown)", "showXPBar", 12, y)
     y = y - 28
     MakeCheck(content, "Show reputation bar (watched faction; used at max level)", "showRepBar", 12, y)
 
     y = y - 36
-    MakeLabel(content, "Card Stats", "GameFontNormal", 16, y)
+    MakeLabel(content, "Tracked Stats", "GameFontNormal", 16, y)
     y = y - 22
-    local note = MakeLabel(content, "Disabled metrics hide inside the expanded HUD card. All are on by default.", "GameFontHighlightSmall", 16, y)
+    local note = MakeLabel(content, "Disabled metrics hide in the stats area (card or separate box). All are on by default.", "GameFontHighlightSmall", 16, y)
     note:SetWidth(500)
     y = y - 28
 
@@ -290,6 +379,7 @@ function FBT:CreateOptions()
         { "showXPHour", "XP / Hour" },
         { "showTTL", "Time to Level (TTL)" },
         { "showKTL", "Kills to Level (KTL)" },
+        { "showQTL", "Quests to Level (QTL)" },
         { "showGoldSession", "Gold earned this session" },
         { "showGoldHour", "Gold / Hour" },
         { "showRested", "Rested XP / percent" },
@@ -328,8 +418,13 @@ function FBT:CreateOptions()
         db.x = FBT.defaults.x
         db.y = FBT.defaults.y
         db.width = FBT.defaults.width
+        db.panelPoint = FBT.defaults.panelPoint
+        db.panelRelativePoint = FBT.defaults.panelRelativePoint
+        db.panelX = FBT.defaults.panelX
+        db.panelY = FBT.defaults.panelY
+        db.panelWidth = FBT.defaults.panelWidth
         FBT:NotifySettingsChanged()
-        FBT:Print("Bar restored to the default XP bar position.")
+        FBT:Print("Card and stats box restored to default positions.")
     end)
 
     panel:SetScript("OnShow", SyncOptionsPanel)
@@ -363,6 +458,18 @@ function FBT:HandleSlash(msg)
         if self.ToggleLock then
             self:ToggleLock()
         end
+    elseif msg == "panel" or msg == "box" or msg == "separate" then
+        if self.db then
+            if self.db.statsDisplayMode == "SEPARATE" then
+                self.db.statsDisplayMode = "EMBEDDED"
+                self:NotifySettingsChanged("statsDisplayMode")
+                self:Print("Stats now expand on the XP/rep card.")
+            else
+                self.db.statsDisplayMode = "SEPARATE"
+                self:NotifySettingsChanged("statsDisplayMode")
+                self:Print("Stats moved to a separate box.")
+            end
+        end
     elseif msg == "reset" then
         if self.ResetSession then
             self:ResetSession()
@@ -370,11 +477,12 @@ function FBT:HandleSlash(msg)
     elseif msg == "unlock" then
         if self.db then
             self.db.isLocked = false
-            self:NotifySettingsChanged()
-            self:Print("Bar unlocked. Shift-drag to move.")
+            self.db.panelLocked = false
+            self:NotifySettingsChanged("isLocked")
+            self:Print("Card and stats box unlocked. Shift-drag to move.")
         end
     else
-        self:Print("Commands: /xt config  |  /xt lock  |  /xt reset")
+        self:Print("Commands: /xt config  |  /xt lock  |  /xt panel  |  /xt reset")
         self:Print("Aliases: /xiusxp   /xt opt")
     end
 end
