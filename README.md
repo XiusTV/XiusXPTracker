@@ -57,6 +57,22 @@ Tracked metrics include session XP/time, rested, time to level, XP/hour, kills t
 
 ---
 
+## More From Xius
+
+**Xius Marks Bar**: A compact raid marking bar. Click the flag for world markers or the star for target markers, with 5 / 10 / 20 pull timers, ready check, and role check built in.  
+[GitHub](https://github.com/XiusTV/XiusMarksBar) · [CurseForge](https://www.curseforge.com/wow/addons/xius-marks-bar)
+
+**Xius Threat Meter**: A clean, lightweight threat meter. Shows who is on the enemy's threat table, how much threat each player and pet has, and warns you before you pull aggro.  
+[GitHub](https://github.com/XiusTV/XiusThreatMeter) · [CurseForge](https://www.curseforge.com/wow/addons/xius-threat-meter)
+
+**Xius Max Graphics**: Pick-and-choose graphics upgrades for Forever and retail. Ultimate, Balance, and Defaults presets push view distance, grass, shadows, water, and image clarity past the normal graphics menu, with optional loot and gathering sparkles.  
+[GitHub](https://github.com/XiusTV/XiusMaxGFX)
+
+**Xius Kill Streak**: A ten-tier kill streak announcer for mobs and enemy players. Each new tier shows a banner and plays a call, with a small counter for the current streak and the time left to keep it going.  
+[GitHub](https://github.com/XiusTV/XiusKillStreak)
+
+All Xius addons share the same clean, dark gold style for a unified UI.
+
 ## License
 
 Personal / public addon. Credit **Xius** if you fork or redistribute.
