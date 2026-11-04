@@ -1,11 +1,13 @@
 # Xius XP/Rep Tracker
 
-A compact HUD card for **World of Warcraft Forever** that replaces the default XP and reputation bars with a movable panel: level, XP, rested, watched faction, session rates, gold, time-to-level, kills-to-level, and quests-to-level.
+A compact HUD card for **modern World of Warcraft** and **World of Warcraft Forever**. It replaces the default XP and reputation bars and adds faster loot, vendor helpers, Train All, and max-rank action bars.
 
 **Folder name:** `XiusXPRepTracker`  
-**Interface:** `16001`  
-**Commands:** `/xt` · `/xiusxp`  
-**Version:** `1.3.4`
+**Interfaces:** `120105` (modern) · `16001` (Forever)  
+**Commands:** `/xt` · `/xiusxp` · `/xxp` · `/xrep` · `/xxr`  
+**Version:** `1.5.2`
+
+Loads on modern WoW and Forever. It does not load on Classic.
 
 ---
 
@@ -20,26 +22,31 @@ Hides the stock XP / reputation tracking bars and shows a dark meter-style **HUD
 1. **On the XP/rep card (default)** — hover or click to expand
 2. **Separate stats box** — always-visible compact panel; the XP/rep card stays collapsed
 
-Tracked metrics include session XP/time, rested, time to level, XP/hour, kills to level, **quests to level**, gold, and reputation rates.
+Tracked metrics include session XP and time, time played this level, total time played, rested, time to level, XP per hour, kills to level, quests to level, gold, and reputation rates.
 
 ---
 
 ## Features
 
 - Live XP bar with rested overlay
-- Watched faction reputation (Friendship / Renown / Paragon when available)
+- Watched faction reputation (Friendship, Renown, and Paragon when those APIs exist)
 - Session gold and gold per hour
 - Kills to level and quests to level estimates
+- Time played this level and total time played
 - Optional separate movable stats box (`/xt panel`)
 - Gear icon or right-click to open settings
 - Shift + Left-drag to move when unlocked
+- Faster loot: corpses loot immediately; hold Shift to open the loot window
+- Auto-sell grey junk and auto-repair at vendors
+- Train All button on class and profession trainers
+- Action bars upgrade to the highest spell rank you know (login, level-up, and after training)
 - Account-wide saved position and options
 
 ---
 
 ## Install
 
-1. Download a release zip (or clone this repository).
+1. Download a release zip (or let CurseForge install it).
 2. Put the **`XiusXPRepTracker`** folder in `Interface\AddOns`.
 3. Enable the addon and `/reload`.
 
@@ -49,10 +56,10 @@ Tracked metrics include session XP/time, rested, time to level, XP/hour, kills t
 
 | Command | Effect |
 |---|---|
-| `/xt` · `/xiusxp` | Help |
-| `/xt config` | Options |
-| `/xt panel` | Toggle separate stats box |
-| `/xt lock` · `/xt unlock` | Lock / unlock |
+| `/xt` · `/xiusxp` · `/xxp` · `/xrep` · `/xxr` | Open settings |
+| `/xt config` | Open settings |
+| `/xt panel` | Toggle the separate stats box |
+| `/xt lock` · `/xt unlock` | Lock / unlock the card and stats box |
 | `/xt reset` | Reset session baselines |
 
 ---
