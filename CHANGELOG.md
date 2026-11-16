@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.5.3
+- Requires Xius Core. If Xius Core is not loaded, the addon stays quiet instead of erroring
+- Unlock Frames in Xius Core highlights the XP card and stats box so they can be dragged. Locking saves the position and hides the handle
+- Faster loot, junk selling, repair, Train All, and max-rank bars stay in Xius Core Quality of Life, so this addon no longer runs a second copy
+- The XP card now follows Enable, bar style, card height, bar colors, and auto-track reputation from the Xius Core settings page
+- The separate stats box moves beside the settings window instead of sitting underneath it
+- The one-second stats tick no longer allocates a timer, and height animation no longer rebuilds the stats grid
+
 ## 1.5.2
 - Fixed EditMode, `PlayerFrame`, `BuffFrame`, and `DamageMeter` taint by suppressing default Blizzard status bars via `SetAlpha(0)` / `EnableMouse(false)` instead of calling `Hide()` or writing custom keys onto Blizzard frames
 - Replaced protected `OpenSettingsPanel` / `Settings.OpenToCategory` calls with a movable standalone Settings dialog (while preserving Blizzard AddOns canvas integration)

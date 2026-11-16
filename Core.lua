@@ -6,46 +6,93 @@
 
 local ADDON, FBT = ...
 
+local XiusCore = _G.XiusCore or _G.XiusUI or _G.XiusCoreSettingsLib
+if not XiusCore and C_AddOns and C_AddOns.IsAddOnLoaded then
+    local ok, loaded = pcall(C_AddOns.IsAddOnLoaded, "XiusCore")
+    XiusCore = ok and loaded and true or false
+end
+if not XiusCore and IsAddOnLoaded then
+    local ok, loaded = pcall(IsAddOnLoaded, "XiusCore")
+    XiusCore = ok and loaded and true or false
+end
+if not XiusCore then
+    return
+end
+
 local CARD_WIDTH = 720
-local HEIGHT_COLLAPSED = 48
-local HEIGHT_EXPANDED = 165
+local HEIGHT_COLLAPSED = 64
+local HEIGHT_EXPANDED = 181
 local PANEL_WIDTH = 340
 local PANEL_HEIGHT = 282
 local PANEL_MIN_WIDTH = 280
 local PANEL_MAX_WIDTH = 520
 local PAD = 8
-local BADGE_SIZE = 32
-local XP_BAR_H = 8
-local REP_BAR_H = 6
+local BADGE_SIZE = 36
+local HEADER_H = 46
+local XP_BAR_H = 14
+local REP_BAR_H = 12
 local ANIM_SPEED = 12
 local HOVER_HIDE_DELAY = 0.3
 local KILL_SAMPLE_SIZE = 5
 local QUEST_SAMPLE_SIZE = 5
 local MIN_WIDTH = 660
 local MAX_WIDTH = 1200
+local STATS_EXTRA = HEIGHT_EXPANDED - HEIGHT_COLLAPSED
+
+local function CardCollapsedHeight()
+    local h = HEIGHT_COLLAPSED
+    if FBT.db and type(FBT.db.cardHeight) == "number" then
+        h = FBT.db.cardHeight
+    end
+    if h < 62 then
+        return 62
+    end
+    if h > 80 then
+        return 80
+    end
+    return h
+end
+
+local function CardExpandedHeight()
+    return CardCollapsedHeight() + STATS_EXTRA
+end
+
+local function SavedColor(saved, fallback)
+    if type(saved) ~= "table" then
+        return fallback[1], fallback[2], fallback[3]
+    end
+    local r = tonumber(saved[1])
+    local g = tonumber(saved[2])
+    local b = tonumber(saved[3])
+    if not r or not g or not b then
+        return fallback[1], fallback[2], fallback[3]
+    end
+    return r, g, b
+end
 local NUM_COLUMNS = 7
 local PANEL_COLUMNS = 3
 local LEFT_MARGIN = 10
 local RIGHT_MARGIN = 10
 
 local COLOR = {
-    -- Soft meter-style chrome (closer to Details / default addon panels).
-    bg = { 0.04, 0.04, 0.04, 0.82 },
-    border = { 0.78, 0.62, 0.18, 0.55 },
-    header = { 0.10, 0.10, 0.10, 0.92 },
-    gold = { 0.95, 0.82, 0.28 },
-    goldDim = { 0.55, 0.45, 0.22 },
-    muted = { 0.70, 0.68, 0.64 },
-    label = { 0.62, 0.55, 0.35 },
-    value = { 0.95, 0.95, 0.95 },
-    xp = { 0.541, 0.169, 0.886 }, -- #8A2BE2
-    rest = { 0.898, 0.663, 0.235 }, -- #E5A93C
+    bg = { 0.06, 0.06, 0.08, 0.92 },
+    border = { 1.0, 0.82, 0.35, 1 },
+    header = { 16 / 255, 17 / 255, 20 / 255, 0.90 },
+    gold = { 1, 209 / 255, 0 },
+    goldDim = { 140 / 255, 115 / 255, 67 / 255 },
+    muted = { 242 / 255, 244 / 255, 248 / 255 },
+    label = { 154 / 255, 161 / 255, 178 / 255 },
+    value = { 1, 1, 1 },
+    xp = { 122 / 255, 50 / 255, 201 / 255 },
+    xpRested = { 31 / 255, 139 / 255, 255 },
+    rest = { 31 / 255, 139 / 255, 255 },
     rep = { 0.36, 0.70, 0.92 },
-    trough = { 0.08, 0.08, 0.08, 1 },
-    footer = { 0.50, 0.50, 0.50 },
+    trough = { 9 / 255, 10 / 255, 12 / 255, 0.85 },
+    trim = { 122 / 255, 99 / 255, 50 / 255, 1 },
+    footer = { 154 / 255, 161 / 255, 178 / 255 },
     good = { 0.45, 0.85, 0.50 },
     bad = { 0.90, 0.35, 0.32 },
-    btn = { 0.08, 0.08, 0.08, 0.95 },
+    btn = { 24 / 255, 25 / 255, 29 / 255, 1 },
     btnHover = { 0.16, 0.14, 0.08, 1 },
 }
 
@@ -85,12 +132,15 @@ local session = {
     startMoney = 0,
 }
 local hideToken = 0
+local factionStanding = {}
+local factionScanReady = false
 local ticker
 local watchedCache
 local watchedCacheValid = false
 local watchedCacheTime = 0
 local watchedInfoTable = {}
 local LayoutStatsGrid
+local EnsureAnim
 local OnXPUpdate
 local OnCardEnter
 local OnCardLeave
@@ -98,6 +148,7 @@ local OnCardDragStop
 local OnPanelDragStop
 local OpenSettingsFromUI
 local refreshQueued = false
+local pendingLayout = false
 local refreshHeader = false
 local refreshStats = false
 local playedLastRequest = 0
@@ -105,8 +156,21 @@ local suppressedChatFrames = {}
 local RequestPlayedTime
 local RestorePlayedChatFrames
 
-local function PublicNumber(v, fallback)
+local function ValueHidden(v)
+    if v == nil then
+        return false
+    end
     if issecretvalue and issecretvalue(v) then
+        return true
+    end
+    if canaccessvalue and not canaccessvalue(v) then
+        return true
+    end
+    return false
+end
+
+local function PublicNumber(v, fallback)
+    if ValueHidden(v) then
         if fallback == nil then
             return 0
         end
@@ -122,7 +186,7 @@ local function PublicNumber(v, fallback)
 end
 
 local function PublicString(v, fallback)
-    if issecretvalue and issecretvalue(v) then
+    if ValueHidden(v) then
         return fallback
     end
     if type(v) ~= "string" then
@@ -274,12 +338,12 @@ local function GetPlayerMaxLevel()
     local apiReady = false
     if GetMaxLevelForPlayerExpansion then
         result = GetMaxLevelForPlayerExpansion()
-        if not (issecretvalue and issecretvalue(result)) and type(result) == "number" then
+        if not (ValueHidden(result)) and type(result) == "number" then
             apiReady = true
         end
     elseif GetMaxLevelForLatestExpansion then
         result = GetMaxLevelForLatestExpansion()
-        if not (issecretvalue and issecretvalue(result)) and type(result) == "number" then
+        if not (ValueHidden(result)) and type(result) == "number" then
             apiReady = true
         end
     end
@@ -327,7 +391,7 @@ local function ApplyFriendship(info)
     local gossip = C_GossipInfo
     if gossip and gossip.GetFriendshipReputation then
         local ok, result = pcall(gossip.GetFriendshipReputation, info.factionID)
-        if ok and not (issecretvalue and issecretvalue(result)) and type(result) == "table" then
+        if ok and not (ValueHidden(result)) and type(result) == "table" then
             friend = result
         end
     end
@@ -335,7 +399,7 @@ local function ApplyFriendship(info)
         local rep = C_Reputation
         if rep and rep.GetFriendshipReputation then
             local ok, result = pcall(rep.GetFriendshipReputation, info.factionID)
-            if ok and not (issecretvalue and issecretvalue(result)) and type(result) == "table" then
+            if ok and not (ValueHidden(result)) and type(result) == "table" then
                 friend = result
             end
         end
@@ -374,7 +438,7 @@ local function ApplyMajorFaction(info)
     end
     if C_Reputation and C_Reputation.IsMajorFaction then
         local okMajor, isMajor = pcall(C_Reputation.IsMajorFaction, info.factionID)
-        if okMajor and not (issecretvalue and issecretvalue(isMajor)) and not isMajor then
+        if okMajor and not (ValueHidden(isMajor)) and not isMajor then
             return info
         end
     end
@@ -383,7 +447,7 @@ local function ApplyMajorFaction(info)
         return info
     end
     local okData, data = pcall(MF.GetMajorFactionData, info.factionID)
-    if not okData or (issecretvalue and issecretvalue(data)) or type(data) ~= "table" then
+    if not okData or (ValueHidden(data)) or type(data) ~= "table" then
         return info
     end
     info.isMajorFaction = true
@@ -408,7 +472,7 @@ local function ApplyMajorFaction(info)
     info.rankName = "Renown " .. tostring(info.renownLevel)
     if MF.HasMaximumRenown then
         local okMax, maxed = pcall(MF.HasMaximumRenown, info.factionID)
-        if okMax and not (issecretvalue and issecretvalue(maxed)) then
+        if okMax and not (ValueHidden(maxed)) then
             info.isMaxRank = maxed and true or false
         else
             info.isMaxRank = info.maxRenownLevel > 0 and info.renownLevel >= info.maxRenownLevel
@@ -428,14 +492,14 @@ local function ApplyParagon(info)
         return info
     end
     local okParagon, isParagon = pcall(R.IsFactionParagon, info.factionID)
-    if not okParagon or (issecretvalue and issecretvalue(isParagon)) or not isParagon then
+    if not okParagon or (ValueHidden(isParagon)) or not isParagon then
         return info
     end
     local okInfo, currentValue, threshold = pcall(R.GetFactionParagonInfo, info.factionID)
     if not okInfo then
         return info
     end
-    if issecretvalue and (issecretvalue(currentValue) or issecretvalue(threshold)) then
+    if ValueHidden(currentValue) or ValueHidden(threshold) then
         return info
     end
     if type(currentValue) ~= "number" or type(threshold) ~= "number" or threshold <= 0 then
@@ -503,7 +567,7 @@ function FBT:GetWatchedFaction(force)
     local R = C_Reputation
     if R and R.GetWatchedFactionData then
         local ok, data = pcall(R.GetWatchedFactionData)
-        if ok and not (issecretvalue and issecretvalue(data)) and type(data) == "table" then
+        if ok and not (ValueHidden(data)) and type(data) == "table" then
             local name = PublicString(data.name, nil)
             local factionID = PublicNumber(data.factionID, 0)
             local maxT = PublicNumber(data.nextReactionThreshold, 0)
@@ -655,7 +719,7 @@ end
 local function ParseCombatXP(msg)
     -- In WoW Forever and Modern WoW 12.x, combat XP lines from mob deaths embed the
     -- enemy's secret name, making the message a secret string. Quest XP has no mob name.
-    if issecretvalue and issecretvalue(msg) then
+    if ValueHidden(msg) then
         return nil, true
     end
     if type(msg) ~= "string" or msg == "" then
@@ -698,7 +762,7 @@ local function CurrentMoney()
         return nil
     end
     local ok, money = pcall(GetMoney)
-    if not ok or (issecretvalue and issecretvalue(money)) or type(money) ~= "number" then
+    if not ok or (ValueHidden(money)) or type(money) ~= "number" then
         return nil
     end
     return money
@@ -728,7 +792,7 @@ local function SuppressPlayedOnChatFrame(cf)
         return
     end
     local ok, registered = pcall(cf.IsEventRegistered, cf, "TIME_PLAYED_MSG")
-    if ok and not (issecretvalue and issecretvalue(registered)) and registered then
+    if ok and not (ValueHidden(registered)) and registered then
         suppressedChatFrames[cf] = true
         pcall(cf.UnregisterEvent, cf, "TIME_PLAYED_MSG")
     end
@@ -792,23 +856,23 @@ local function FrameIsMouseOver(frame)
     end
     if frame.IsVisible then
         local okVis, vis = pcall(frame.IsVisible, frame)
-        if not okVis or (issecretvalue and issecretvalue(vis)) or not vis then
+        if not okVis or (ValueHidden(vis)) or not vis then
             return false
         end
     end
     if frame.IsMouseOver then
         local okOver, over = pcall(frame.IsMouseOver, frame)
-        if okOver and not (issecretvalue and issecretvalue(over)) then
+        if okOver and not (ValueHidden(over)) then
             return over and true or false
         end
     end
     local left, right, bottom, top = frame:GetLeft(), frame:GetRight(), frame:GetBottom(), frame:GetTop()
-    if not left then
+    if ValueHidden(left) or ValueHidden(right) or ValueHidden(bottom) or ValueHidden(top) or not left then
         return false
     end
     local scale = frame:GetEffectiveScale() or 1
     local x, y = GetCursorPosition()
-    if issecretvalue and (issecretvalue(x) or issecretvalue(y) or issecretvalue(scale)) then
+    if ValueHidden(x) or ValueHidden(y) or ValueHidden(scale) or scale == 0 then
         return false
     end
     x, y = x / scale, y / scale
@@ -859,7 +923,7 @@ end
 
 local function GetBlizzardBars()
     local now = GetTime()
-    if blizzBarCacheAt > 0 and (now - blizzBarCacheAt) < 5 then
+    if blizzBarCacheAt > 0 and (now - blizzBarCacheAt) < 30 then
         return blizzBarList
     end
     for i = #blizzBarList, 1, -1 do
@@ -879,7 +943,7 @@ local function SuppressBlizzardFrame(frame)
     end
     if frame.GetAlpha then
         local ok, alpha = pcall(frame.GetAlpha, frame)
-        if not ok or (issecretvalue and issecretvalue(alpha)) or alpha ~= 0 then
+        if not ok or (ValueHidden(alpha)) or alpha ~= 0 then
             pcall(frame.SetAlpha, frame, 0)
         end
     else
@@ -903,7 +967,7 @@ local function EditModeActive()
     end
     if frame.IsEditModeActive then
         local ok, active = pcall(frame.IsEditModeActive, frame)
-        if not ok or (issecretvalue and issecretvalue(active)) then
+        if not ok or (ValueHidden(active)) then
             return false
         end
         return active and true or false
@@ -912,13 +976,35 @@ local function EditModeActive()
         return false
     end
     local ok, shown = pcall(frame.IsShown, frame)
-    if not ok or (issecretvalue and issecretvalue(shown)) then
+    if not ok or (ValueHidden(shown)) then
         return false
     end
     return shown and true or false
 end
 
+local function RestoreBlizzardFrame(frame)
+    if not frame then
+        return
+    end
+    suppressedFrames[frame] = nil
+    if frame.SetAlpha then
+        pcall(frame.SetAlpha, frame, 1)
+    end
+    if InCombatLockdown and InCombatLockdown() then
+        return
+    end
+    if frame.EnableMouse then
+        pcall(frame.EnableMouse, frame, true)
+    end
+    if frame.EnableMouseWheel then
+        pcall(frame.EnableMouseWheel, frame, true)
+    end
+end
+
 function FBT:HideBlizzardTrackingBars(force)
+    if self.db and self.db.enabled == false then
+        return
+    end
     if EditModeActive() then
         return
     end
@@ -931,15 +1017,158 @@ function FBT:HideBlizzardTrackingBars(force)
     end
 end
 
+function FBT:RestoreBlizzardTrackingBars()
+    blizzBarCacheAt = 0
+    local bars = GetBlizzardBars()
+    for i = 1, #bars do
+        RestoreBlizzardFrame(bars[i])
+    end
+end
+
+function FBT:ApplyVisibility()
+    if not ui.card or not self.db then
+        return
+    end
+    if self.db.enabled == false then
+        ui.card:Hide()
+        if ui.panel then
+            ui.panel:Hide()
+        end
+        self:RestoreBlizzardTrackingBars()
+        return
+    end
+    if not ui.card:IsShown() then
+        ui.card:Show()
+    end
+    self:HideBlizzardTrackingBars(true)
+    self:ApplyStatsDisplayMode()
+end
+
+function FBT:ApplyCardHeight()
+    if not ui.card then
+        return
+    end
+    local collapsed = CardCollapsedHeight()
+    if ui.card.SetResizeBounds then
+        ui.card:SetResizeBounds(MIN_WIDTH, collapsed, MAX_WIDTH, 220)
+    elseif ui.card.SetMinResize then
+        ui.card:SetMinResize(MIN_WIDTH, collapsed)
+    end
+    if IsSeparateStatsMode() or not ui.expanded then
+        ui.currentHeight = collapsed
+        ui.targetHeight = collapsed
+        ui.card:SetHeight(collapsed)
+        return
+    end
+    ui.targetHeight = CardExpandedHeight()
+    if EnsureAnim then
+        EnsureAnim()
+    end
+end
+
+local function EnsureInnerShadow(frame)
+    if not frame or frame.xiusShadow then
+        return
+    end
+    local shadow = {}
+    local specs = {
+        { "TOPLEFT", "TOPRIGHT", true, 4, -4 },
+        { "BOTTOMLEFT", "BOTTOMRIGHT", true, 4, 4 },
+        { "TOPLEFT", "BOTTOMLEFT", false, 4, -4 },
+        { "TOPRIGHT", "BOTTOMRIGHT", false, -4, -4 },
+    }
+    for i = 1, 4 do
+        local spec = specs[i]
+        local line = frame:CreateTexture(nil, "BORDER", nil, 1)
+        line:SetColorTexture(0, 0, 0, 0.65)
+        if spec[3] then
+            line:SetPoint(spec[1], frame, spec[1], spec[4], spec[5])
+            line:SetPoint(spec[2], frame, spec[2], -spec[4], spec[5])
+            line:SetHeight(1)
+        else
+            line:SetPoint(spec[1], frame, spec[1], spec[4], spec[5])
+            line:SetPoint(spec[2], frame, spec[2], spec[4], -spec[5])
+            line:SetWidth(1)
+        end
+        shadow[i] = line
+    end
+    frame.xiusShadow = shadow
+end
+
 local function ApplyCardBackdrop(frame)
+    if not frame or not frame.SetBackdrop then
+        return
+    end
+    EnsureInnerShadow(frame)
     frame:SetBackdrop({
         bgFile = "Interface\\Buttons\\WHITE8X8",
-        edgeFile = "Interface\\Buttons\\WHITE8X8",
-        edgeSize = 1,
-        insets = { left = 1, right = 1, top = 1, bottom = 1 },
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        edgeSize = 14,
+        insets = { left = 4, right = 4, top = 4, bottom = 4 },
     })
-    frame:SetBackdropColor(COLOR.bg[1], COLOR.bg[2], COLOR.bg[3], COLOR.bg[4])
-    frame:SetBackdropBorderColor(COLOR.border[1], COLOR.border[2], COLOR.border[3], COLOR.border[4])
+    frame:SetBackdropColor(0.06, 0.06, 0.08, 0.92)
+    frame:SetBackdropBorderColor(1.0, 0.82, 0.35, 1.0)
+end
+
+function FBT:ApplyBarColors()
+    local xr, xg, xb = SavedColor(self.db and self.db.xpColor, COLOR.xp)
+    local rr, rg, rb = SavedColor(self.db and self.db.repColor, COLOR.rep)
+    if COLOR.xp[1] ~= xr or COLOR.xp[2] ~= xg or COLOR.xp[3] ~= xb then
+        COLOR.xp[1], COLOR.xp[2], COLOR.xp[3] = xr, xg, xb
+        if ui.xpBar and ui.xpBar.bar then
+            ui.xpBar.bar._r = nil
+        end
+    end
+    if COLOR.rep[1] ~= rr or COLOR.rep[2] ~= rg or COLOR.rep[3] ~= rb then
+        COLOR.rep[1], COLOR.rep[2], COLOR.rep[3] = rr, rg, rb
+        if ui.repBar and ui.repBar.bar then
+            ui.repBar.bar._r = nil
+        end
+        if ui.xpBar and ui.xpBar.bar and ui.barKind == "rep" then
+            ui.xpBar.bar._r = nil
+        end
+    end
+end
+
+function FBT:ApplyChrome()
+    local minimal = self.db and self.db.barStyle == "minimal"
+    local function Paint(frame)
+        if not frame or not frame.SetBackdrop then
+            return
+        end
+        if minimal then
+            frame:SetBackdrop({
+                bgFile = "Interface\\Buttons\\WHITE8X8",
+                edgeFile = "Interface\\Buttons\\WHITE8X8",
+                edgeSize = 1,
+                insets = { left = 1, right = 1, top = 1, bottom = 1 },
+            })
+            frame:SetBackdropColor(0.07, 0.07, 0.08, 0.9)
+            frame:SetBackdropBorderColor(0.22, 0.22, 0.25, 1)
+        else
+            ApplyCardBackdrop(frame)
+        end
+    end
+    local function ShowShadow(frame, shown)
+        local shadow = frame and frame.xiusShadow
+        if not shadow then
+            return
+        end
+        for i = 1, #shadow do
+            shadow[i]:SetShown(shown)
+        end
+    end
+    Paint(ui.card)
+    Paint(ui.panel)
+    ShowShadow(ui.card, not minimal)
+    ShowShadow(ui.panel, not minimal)
+    self:ApplyBarColors()
+    if ui.xpBar and ui.xpBar.LayoutTicks then
+        ui.xpBar:LayoutTicks()
+    end
+    if ui.repBar and ui.repBar.LayoutTicks then
+        ui.repBar:LayoutTicks()
+    end
 end
 
 local function SetFont(fs, template, size, flags)
@@ -978,18 +1207,18 @@ local function EnsurePrivateTooltip()
     if privateTip then
         return privateTip
     end
-    local tip = CreateFrame("Frame", "XiusXPRepTrackerTooltip", UIParent, "BackdropTemplate")
+    local tip = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
     tip:SetFrameStrata("TOOLTIP")
     tip:SetFrameLevel(150)
     tip:SetClampedToScreen(true)
     tip:SetBackdrop({
         bgFile = "Interface\\Buttons\\WHITE8X8",
-        edgeFile = "Interface\\Buttons\\WHITE8X8",
-        edgeSize = 1,
-        insets = { left = 1, right = 1, top = 1, bottom = 1 },
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        edgeSize = 12,
+        insets = { left = 3, right = 3, top = 3, bottom = 3 },
     })
-    tip:SetBackdropColor(0.04, 0.04, 0.04, 0.96)
-    tip:SetBackdropBorderColor(COLOR.border[1], COLOR.border[2], COLOR.border[3], 0.85)
+    tip:SetBackdropColor(0.06, 0.06, 0.08, 0.96)
+    tip:SetBackdropBorderColor(1.0, 0.82, 0.35, 1)
     tip:Hide()
 
     local title = tip:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -1096,11 +1325,12 @@ local function CreateThinBar(parent, height)
         edgeSize = 1,
         insets = { left = 1, right = 1, top = 1, bottom = 1 },
     })
-    holder:SetBackdropColor(COLOR.trough[1], COLOR.trough[2], COLOR.trough[3], 1)
-    holder:SetBackdropBorderColor(0.12, 0.12, 0.13, 1)
+    holder:SetBackdropColor(COLOR.trough[1], COLOR.trough[2], COLOR.trough[3], COLOR.trough[4] or 0.85)
+    holder:SetBackdropBorderColor(COLOR.trim[1], COLOR.trim[2], COLOR.trim[3], 1)
 
     local rest = holder:CreateTexture(nil, "ARTWORK")
-    rest:SetColorTexture(COLOR.rest[1], COLOR.rest[2], COLOR.rest[3], 0.95)
+    rest:SetTexture("Interface\\TargetingFrame\\UI-StatusBar")
+    rest:SetVertexColor(0.62, 0.78, 1, 0.45)
     rest:Hide()
 
     local bar = CreateFrame("StatusBar", nil, holder)
@@ -1110,6 +1340,57 @@ local function CreateThinBar(parent, height)
     bar:SetMinMaxValues(0, 1)
     bar:SetValue(0)
     bar:SetFrameLevel(holder:GetFrameLevel() + 1)
+
+    local gloss = bar:CreateTexture(nil, "OVERLAY", nil, 1)
+    gloss:SetPoint("TOPLEFT", bar, "TOPLEFT", 0, 0)
+    gloss:SetPoint("TOPRIGHT", bar, "TOPRIGHT", 0, 0)
+    gloss:SetHeight(math.max(4, math.floor(height * 0.5)))
+    gloss:SetColorTexture(1, 1, 1, 0.16)
+    if gloss.SetGradientAlpha then
+        pcall(gloss.SetGradientAlpha, gloss, "VERTICAL", 1, 1, 1, 0.02, 1, 1, 1, 0.30)
+    elseif gloss.SetGradient and CreateColor then
+        pcall(gloss.SetGradient, gloss, "VERTICAL", CreateColor(1, 1, 1, 0.02), CreateColor(1, 1, 1, 0.30))
+    end
+
+    local overlay = CreateFrame("Frame", nil, holder)
+    overlay:SetAllPoints()
+    overlay:SetFrameLevel(bar:GetFrameLevel() + 2)
+
+    local ticks = {}
+    for i = 1, 19 do
+        local tick = overlay:CreateTexture(nil, "OVERLAY")
+        tick:SetColorTexture(0, 0, 0, 0.45)
+        tick:SetWidth(1)
+        tick:Hide()
+        ticks[i] = tick
+    end
+    holder.ticks = ticks
+    function holder:LayoutTicks()
+        local width = self:GetWidth()
+        local minimal = FBT.db and FBT.db.barStyle == "minimal"
+        local show = width > 40 and not minimal
+        if minimal then
+            self:SetBackdropBorderColor(0.2, 0.2, 0.22, 1)
+        else
+            self:SetBackdropBorderColor(COLOR.trim[1], COLOR.trim[2], COLOR.trim[3], 1)
+        end
+        for i = 1, #ticks do
+            local tick = ticks[i]
+            if show then
+                local x = width * (i / 20)
+                tick:ClearAllPoints()
+                tick:SetPoint("TOP", self, "TOPLEFT", x, -1)
+                tick:SetPoint("BOTTOM", self, "BOTTOMLEFT", x, 1)
+                tick:Show()
+            else
+                tick:Hide()
+            end
+        end
+    end
+    holder:SetScript("OnSizeChanged", function(self)
+        self:LayoutTicks()
+    end)
+    holder:LayoutTicks()
 
     holder.bar = bar
     holder.rest = rest
@@ -1244,8 +1525,9 @@ function FBT:ResolveGrowthDirection(useLivePosition)
     -- the middle of the screen until the lock checkbox reapplied saved points.
     if useLivePosition and ui.card then
         local _, centerY = ui.card:GetCenter()
-        if centerY then
-            if centerY < (GetScreenHeight() * 0.5) then
+        local screenH = GetScreenHeight()
+        if not ValueHidden(centerY) and not ValueHidden(screenH) and type(centerY) == "number" and type(screenH) == "number" then
+            if centerY < (screenH * 0.5) then
                 return "UP"
             end
             return "DOWN"
@@ -1281,14 +1563,20 @@ function FBT:UpdateFrameOrientation(resolvedDirection, reanchorCard)
     ui.resolvedDirection = resolvedDirection
 
     if reanchorCard then
-        local left, right, top, bottom = card:GetLeft(), card:GetRight(), card:GetTop(), card:GetBottom()
-        if left and right and top and bottom then
-            local currentCenterX = (left + right) / 2
-            card:ClearAllPoints()
-            if ui.growUp then
-                card:SetPoint("BOTTOM", UIParent, "BOTTOMLEFT", currentCenterX, bottom)
-            else
-                card:SetPoint("TOP", UIParent, "BOTTOMLEFT", currentCenterX, top)
+        if InCombatLockdown and InCombatLockdown() then
+            pendingLayout = true
+        else
+            local left, right, top, bottom = card:GetLeft(), card:GetRight(), card:GetTop(), card:GetBottom()
+            if ValueHidden(left) or ValueHidden(right) or ValueHidden(top) or ValueHidden(bottom) then
+                pendingLayout = true
+            elseif left and right and top and bottom then
+                local currentCenterX = (left + right) / 2
+                card:ClearAllPoints()
+                if ui.growUp then
+                    card:SetPoint("BOTTOM", UIParent, "BOTTOMLEFT", currentCenterX, bottom)
+                else
+                    card:SetPoint("TOP", UIParent, "BOTTOMLEFT", currentCenterX, top)
+                end
             end
         end
     end
@@ -1301,7 +1589,7 @@ function FBT:UpdateFrameOrientation(resolvedDirection, reanchorCard)
     header:ClearAllPoints()
     if statsOnCard then
         stats:ClearAllPoints()
-        stats:SetHeight(HEIGHT_EXPANDED - 60)
+        stats:SetHeight(STATS_EXTRA - 12)
     end
     if ui.growUp then
         header:SetPoint("BOTTOMLEFT", card, "BOTTOMLEFT", 10, 8)
@@ -1365,11 +1653,17 @@ local function SavePosition()
         return
     end
     local point, _, relativePoint, x, y = card:GetPoint(1)
+    if ValueHidden(point) then
+        point = nil
+    end
+    if ValueHidden(relativePoint) then
+        relativePoint = nil
+    end
     db.point = point or "BOTTOM"
     db.relativePoint = relativePoint or "BOTTOMLEFT"
-    db.x = x or 0
-    db.y = y or 0
-    db.width = math.max(MIN_WIDTH, Round(card:GetWidth()))
+    db.x = PublicNumber(x, db.x or 0)
+    db.y = PublicNumber(y, db.y or 0)
+    db.width = math.max(MIN_WIDTH, Round(PublicNumber(card:GetWidth(), db.width or MIN_WIDTH)))
 end
 
 local function SavePanelPosition()
@@ -1378,11 +1672,50 @@ local function SavePanelPosition()
         return
     end
     local point, _, relativePoint, x, y = panel:GetPoint(1)
+    if ValueHidden(point) then
+        point = nil
+    end
+    if ValueHidden(relativePoint) then
+        relativePoint = nil
+    end
     db.panelPoint = point or "CENTER"
     db.panelRelativePoint = relativePoint or "CENTER"
-    db.panelX = x or 0
-    db.panelY = y or 0
-    db.panelWidth = math.max(PANEL_MIN_WIDTH, Round(panel:GetWidth()))
+    db.panelX = PublicNumber(x, db.panelX or 0)
+    db.panelY = PublicNumber(y, db.panelY or 0)
+    db.panelWidth = math.max(PANEL_MIN_WIDTH, Round(PublicNumber(panel:GetWidth(), db.panelWidth or PANEL_MIN_WIDTH)))
+end
+
+function FBT:NudgePanelClearOfOptions()
+    if not IsSeparateStatsMode() or not ui.panel or not ui.panel:IsShown() or not self.db or self.db.panelLocked then
+        return
+    end
+    local window = _G.XiusUISettingsLibFrame
+    if not (window and window.IsShown and window:IsShown()) then
+        window = _G.XiusUIOptionsFrame
+    end
+    if not (window and window.IsShown and window:IsShown()) then
+        return
+    end
+    local pLeft, pRight = ui.panel:GetLeft(), ui.panel:GetRight()
+    local pBottom, pTop = ui.panel:GetBottom(), ui.panel:GetTop()
+    local wLeft, wRight = window:GetLeft(), window:GetRight()
+    local wBottom, wTop = window:GetBottom(), window:GetTop()
+    if not pLeft or not pRight or not wLeft or not wRight or ValueHidden(pLeft) or ValueHidden(pRight) or ValueHidden(wLeft) or ValueHidden(wRight) or ValueHidden(pTop) or ValueHidden(wTop) or ValueHidden(pBottom) or ValueHidden(wBottom) then
+        return
+    end
+    local overlaps = pLeft < wRight and pRight > wLeft and pBottom < wTop and pTop > wBottom
+    if not overlaps then
+        return
+    end
+    local screenW = GetScreenWidth() or 0
+    local width = ui.panel:GetWidth() or PANEL_WIDTH
+    local x = wRight + 12
+    if screenW > 0 and (x + width) > (screenW - 8) then
+        x = wLeft - width - 12
+    end
+    ui.panel:ClearAllPoints()
+    ui.panel:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", x, wTop)
+    SavePanelPosition()
 end
 
 local VALID_POINTS = {
@@ -1392,6 +1725,10 @@ local VALID_POINTS = {
 }
 
 function FBT:RestoreCardPosition()
+    if InCombatLockdown and InCombatLockdown() then
+        pendingLayout = true
+        return
+    end
     local db = self.db or ForeverBarTrackerDB
     local card = ui.card
     if not db or not card or not db.point then
@@ -1416,6 +1753,10 @@ function FBT:RestoreCardPosition()
 end
 
 function FBT:RestorePanelPosition()
+    if InCombatLockdown and InCombatLockdown() then
+        pendingLayout = true
+        return
+    end
     local db = self.db or ForeverBarTrackerDB
     local panel = ui.panel
     if not db or not panel then
@@ -1595,7 +1936,7 @@ local function AnimOnUpdate(self, elapsed)
             SavePosition()
         else
             local x = GetCursorPosition()
-            if issecretvalue and issecretvalue(x) then
+            if ValueHidden(x) then
                 return
             end
             local width = Clamp(ui.sizeStartW + ((x - ui.sizeStartX) / ui.sizeScale), MIN_WIDTH, MAX_WIDTH)
@@ -1610,9 +1951,9 @@ local function AnimOnUpdate(self, elapsed)
 
     if IsSeparateStatsMode() then
         -- Stats live on the separate panel; only collapse the XP/rep card.
-        ui.currentHeight = HEIGHT_COLLAPSED
-        ui.targetHeight = HEIGHT_COLLAPSED
-        self:SetHeight(HEIGHT_COLLAPSED)
+        ui.currentHeight = CardCollapsedHeight()
+        ui.targetHeight = CardCollapsedHeight()
+        self:SetHeight(CardCollapsedHeight())
         if not ui.sizing and not ui.moving then
             self:SetScript("OnUpdate", nil)
         end
@@ -1630,7 +1971,7 @@ local function AnimOnUpdate(self, elapsed)
         self:SetHeight(ui.currentHeight)
     end
 
-    local progress = Clamp((ui.currentHeight - HEIGHT_COLLAPSED) / (HEIGHT_EXPANDED - HEIGHT_COLLAPSED), 0, 1)
+    local progress = Clamp((ui.currentHeight - CardCollapsedHeight()) / STATS_EXTRA, 0, 1)
     ui.stats:SetAlpha(progress)
     if progress <= 0.02 then
         if ui.stats:IsShown() then
@@ -1668,7 +2009,7 @@ local function PanelOnUpdate(self, elapsed)
         return
     end
     local x = GetCursorPosition()
-    if issecretvalue and issecretvalue(x) then
+    if ValueHidden(x) then
         return
     end
     local width = Clamp(ui.panelSizeStartW + ((x - ui.panelSizeStartX) / ui.panelSizeScale), PANEL_MIN_WIDTH, PANEL_MAX_WIDTH)
@@ -1676,27 +2017,25 @@ local function PanelOnUpdate(self, elapsed)
     if FBT.db then
         FBT.db.panelWidth = math.max(PANEL_MIN_WIDTH, Round(width))
     end
-    ui.gridLayoutWidth = nil
-    LayoutStatsGrid()
 end
 
-local function EnsureAnim()
+EnsureAnim = function()
     ui.card:SetScript("OnUpdate", AnimOnUpdate)
 end
 
 function FBT:SetExpanded(expanded)
     if IsSeparateStatsMode() then
         ui.expanded = false
-        ui.targetHeight = HEIGHT_COLLAPSED
-        ui.currentHeight = HEIGHT_COLLAPSED
+        ui.targetHeight = CardCollapsedHeight()
+        ui.currentHeight = CardCollapsedHeight()
         if ui.card then
-            ui.card:SetHeight(HEIGHT_COLLAPSED)
+            ui.card:SetHeight(CardCollapsedHeight())
         end
         -- Keep panel stats visible; do not hide ui.stats.
         return
     end
     ui.expanded = expanded and true or false
-    ui.targetHeight = ui.expanded and HEIGHT_EXPANDED or HEIGHT_COLLAPSED
+    ui.targetHeight = ui.expanded and CardExpandedHeight() or CardCollapsedHeight()
     if ui.expanded then
         ui.stats:Show()
         self:RefreshStats()
@@ -2109,27 +2448,35 @@ function FBT:ApplyStatsDisplayMode()
             ui.stats:Hide()
             ui.stats:SetAlpha(0)
             SetStatsInteractive(false)
-            ui.currentHeight = HEIGHT_COLLAPSED
-            ui.targetHeight = HEIGHT_COLLAPSED
-            ui.card:SetHeight(HEIGHT_COLLAPSED)
+            ui.currentHeight = CardCollapsedHeight()
+            ui.targetHeight = CardCollapsedHeight()
+            ui.card:SetHeight(CardCollapsedHeight())
         end
     end
     ui.footerHint = nil
     self:RefreshStats()
+    if ui.moversUnlocked and self.ShowMoverChrome then
+        self:ShowMoverChrome()
+    end
 end
 
 function FBT:ApplySettings(key)
-    if self.ApplyLootVendorSettings and (key == nil or key == "fasterLoot" or key == "autoSellJunk" or key == "autoRepair") then
-        self:ApplyLootVendorSettings(key)
-    end
-    if self.ApplyTrainAllSettings and (key == nil or key == "trainAllButton") then
-        self:ApplyTrainAllSettings(key)
-    end
-    if self.ApplyMaxRankSettings and (key == nil or key == "maxRankActionBars") then
-        self:ApplyMaxRankSettings(key)
-    end
     if not ui.card or not self.db then
         return
+    end
+    if self.db.enabled == false and (key == nil or key == "enabled") then
+        self:ApplyVisibility()
+        return
+    end
+    if key == nil or key == "barStyle" or key == "xpColor" or key == "repColor" then
+        ui.barKind = nil
+        self:ApplyChrome()
+    end
+    if key == nil or key == "cardHeight" then
+        self:ApplyCardHeight()
+    end
+    if key == "autoTrackRep" then
+        factionScanReady = false
     end
     -- Visual toggles should not re-anchor the card. Position, lock, and
     -- growth still restore from saved points.
@@ -2142,10 +2489,10 @@ function FBT:ApplySettings(key)
         end
     end
     if ui.grip and (key == nil or key == "isLocked") then
-        ui.grip:SetShown(not self.db.isLocked)
+        ui.grip:SetShown(ui.moversUnlocked or not self.db.isLocked)
     end
     if ui.panelGrip and (key == nil or key == "panelLocked" or key == "statsDisplayMode") then
-        ui.panelGrip:SetShown(not self.db.panelLocked and IsSeparateStatsMode())
+        ui.panelGrip:SetShown((ui.moversUnlocked or not self.db.panelLocked) and IsSeparateStatsMode())
     end
     if key == nil or key == "statsDisplayMode" then
         self:ApplyStatsDisplayMode()
@@ -2163,6 +2510,9 @@ function FBT:ApplySettings(key)
         ui.barKind = nil
         ui.repCur = nil
         ui.repMax = nil
+    end
+    if key == nil or key == "enabled" then
+        self:ApplyVisibility()
     end
     self:Refresh()
 end
@@ -2207,7 +2557,11 @@ function FBT:ResetSession()
 end
 
 function FBT:StartSession()
-    self:HideBlizzardTrackingBars(true)
+    if self.db and self.db.enabled == false then
+        self:RestoreBlizzardTrackingBars()
+    else
+        self:HideBlizzardTrackingBars(true)
+    end
     if session.active then
         CacheFactionBaseline(false)
         EnsureMoneyBaseline()
@@ -2236,11 +2590,27 @@ function FBT:StartSession()
         ticker = nil
     end
     if C_Timer and C_Timer.NewTicker then
+        local sweep = 0
         ticker = C_Timer.NewTicker(1.0, function()
-            FBT:HideBlizzardTrackingBars()
-            FBT:UpdateRestedOverlay()
+            local cardShown = ui.card and ui.card:IsShown()
+            if not ui.card or ValueHidden(cardShown) or not cardShown then
+                return
+            end
+            sweep = sweep + 1
+            if sweep >= 5 then
+                sweep = 0
+                FBT:HideBlizzardTrackingBars()
+            end
+            local xpShown = ui.xpBar and ui.xpBar:IsShown()
+            if ui.xpBar and not ValueHidden(xpShown) and xpShown then
+                local restNow = CurrentRestXP()
+                if ui.restSeen ~= restNow then
+                    ui.restSeen = restNow
+                    FBT:UpdateRestedOverlay()
+                end
+            end
             if IsSeparateStatsMode() or ui.expanded then
-                FBT:RequestRefresh(true)
+                FBT:RefreshStats()
             end
         end)
     end
@@ -2291,7 +2661,7 @@ local function OnCardMouseDown(_, button)
     if ui.grip and ui.grip:IsShown() and FrameIsMouseOver(ui.grip) then
         return
     end
-    if not db.isLocked and IsShiftKeyDown() then
+    if (ui.moversUnlocked or (not db.isLocked and IsShiftKeyDown())) and not (InCombatLockdown and InCombatLockdown()) then
         ui.moving = true
         ui.card:StartMoving()
         EnsureAnim()
@@ -2339,7 +2709,7 @@ local function OnPanelMouseDown(_, button)
     if ui.panelGrip and ui.panelGrip:IsShown() and FrameIsMouseOver(ui.panelGrip) then
         return
     end
-    if not db.panelLocked and IsShiftKeyDown() then
+    if (ui.moversUnlocked or (not db.panelLocked and IsShiftKeyDown())) and not (InCombatLockdown and InCombatLockdown()) then
         ui.panelMoving = true
         ui.panel:StartMoving()
         ui.panel:SetScript("OnUpdate", PanelOnUpdate)
@@ -2362,7 +2732,7 @@ local function OnPanelMouseUp(_, button)
 end
 
 local function BuildStatsContent(parent)
-    local stats = CreateFrame("Frame", "XiusXPRepTrackerStats", parent)
+    local stats = CreateFrame("Frame", nil, parent)
     stats:SetPoint("TOPLEFT", parent, "TOPLEFT", PAD, -PAD)
     stats:SetPoint("BOTTOMRIGHT", parent, "BOTTOMRIGHT", -PAD, PAD)
     stats:SetAlpha(0)
@@ -2490,12 +2860,188 @@ local function BuildStatsContent(parent)
     return stats
 end
 
+local function MoverColor()
+    local accent = XiusUI and XiusUI.Media and XiusUI.Media.accent
+    if type(accent) == "table" then
+        return accent[1] or 1, accent[2] or 0.82, accent[3] or 0
+    end
+    return 1, 0.82, 0
+end
+
+local function BindMoverOverlay(host, kind)
+    if not host then
+        return nil
+    end
+    if host.xiusMover then
+        return host.xiusMover
+    end
+    local overlay = CreateFrame("Frame", nil, host, "BackdropTemplate")
+    overlay:SetAllPoints(host)
+    overlay:SetFrameLevel((host:GetFrameLevel() or 0) + 40)
+    overlay:EnableMouse(true)
+    overlay:SetBackdrop({
+        bgFile = "Interface\\Buttons\\WHITE8X8",
+        edgeFile = "Interface\\Buttons\\WHITE8X8",
+        edgeSize = 2,
+        insets = { left = 2, right = 2, top = 2, bottom = 2 },
+    })
+    overlay:SetBackdropColor(0.04, 0.03, 0.01, 0.28)
+    local text = overlay:CreateFontString(nil, "OVERLAY")
+    text:SetPoint("CENTER", overlay, "CENTER", 0, 0)
+    text:SetJustifyH("CENTER")
+    text:SetJustifyV("MIDDLE")
+    SetFont(text, GameFontHighlight, 12, "OUTLINE")
+    overlay.label = text
+    overlay:SetScript("OnMouseDown", function(_, button)
+        if button ~= "LeftButton" or not ui.moversUnlocked then
+            return
+        end
+        if InCombatLockdown and InCombatLockdown() then
+            return
+        end
+        if kind == "card" then
+            ui.moving = true
+            host:StartMoving()
+            EnsureAnim()
+        else
+            ui.panelMoving = true
+            host:StartMoving()
+            host:SetScript("OnUpdate", PanelOnUpdate)
+        end
+    end)
+    overlay:SetScript("OnMouseUp", function(_, button)
+        if button ~= "LeftButton" then
+            return
+        end
+        if kind == "card" then
+            OnCardDragStop()
+        else
+            OnPanelDragStop()
+        end
+    end)
+    overlay:Hide()
+    host.xiusMover = overlay
+    return overlay
+end
+
+function FBT:RefreshMoverChrome()
+    local r, g, b = MoverColor()
+    local function Paint(host, caption, kind)
+        local overlay = BindMoverOverlay(host, kind)
+        if not overlay then
+            return
+        end
+        overlay.label:SetText(caption)
+        overlay.label:SetTextColor(r, g, b, 1)
+        overlay:SetBackdropBorderColor(r, g, b, 1)
+    end
+    Paint(ui.card, "XP / Rep\nDrag to move", "card")
+    Paint(ui.panel, "XP Stats\nDrag to move", "panel")
+end
+
+function FBT:ShowMoverChrome()
+    self:RefreshMoverChrome()
+    if ui.card and ui.card.xiusMover then
+        if not ui.card:IsShown() then
+            ui.card:Show()
+        end
+        ui.card.xiusMover:Show()
+        if ui.grip then
+            ui.grip:SetFrameLevel(ui.card.xiusMover:GetFrameLevel() + 2)
+            ui.grip:Show()
+        end
+    end
+    if ui.panel and ui.panel.xiusMover then
+        if IsSeparateStatsMode() then
+            if not ui.panel:IsShown() then
+                ui.panel:Show()
+            end
+            ui.panel.xiusMover:Show()
+            if ui.panelGrip then
+                ui.panelGrip:SetFrameLevel(ui.panel.xiusMover:GetFrameLevel() + 2)
+                ui.panelGrip:Show()
+            end
+        else
+            ui.panel.xiusMover:Hide()
+        end
+    end
+end
+
+function FBT:HideMoverChrome()
+    if ui.card and ui.card.xiusMover then
+        ui.card.xiusMover:Hide()
+    end
+    if ui.panel and ui.panel.xiusMover then
+        ui.panel.xiusMover:Hide()
+    end
+end
+
+function FBT:SetFrameMovers(unlocked)
+    unlocked = unlocked and true or false
+    if not ui.card then
+        self.pendingMovers = unlocked
+        return
+    end
+    local was = ui.moversUnlocked and true or false
+    if was == unlocked then
+        if unlocked then
+            self:ShowMoverChrome()
+        end
+        return
+    end
+    ui.moversUnlocked = unlocked
+    if unlocked then
+        self:ShowMoverChrome()
+        return
+    end
+    if ui.moving then
+        OnCardDragStop()
+    end
+    if ui.panelMoving then
+        OnPanelDragStop()
+    end
+    SavePosition()
+    if ui.panel then
+        SavePanelPosition()
+    end
+    self:HideMoverChrome()
+    if self.db and self.db.enabled == false then
+        self:ApplyVisibility()
+    end
+    if ui.grip then
+        ui.grip:SetShown(not (self.db and self.db.isLocked))
+    end
+    if ui.panelGrip then
+        ui.panelGrip:SetShown((not (self.db and self.db.panelLocked)) and IsSeparateStatsMode())
+    end
+end
+
+function FBT:RegisterFrameMovers()
+    local core = XiusUI or _G.XiusCore
+    if not core or not core.RegisterMover or not ui.card then
+        return
+    end
+    core:RegisterMover("xp", ui.card, "XP / Rep", function(isUnlocked)
+        FBT:SetFrameMovers(isUnlocked and true or false)
+    end)
+    if ui.panel then
+        core:RegisterMover("xpPanel", ui.panel, "XP Stats", function(isUnlocked)
+            FBT:SetFrameMovers(isUnlocked and true or false)
+        end)
+    end
+    if self.pendingMovers ~= nil then
+        local pending = self.pendingMovers
+        self.pendingMovers = nil
+        self:SetFrameMovers(pending)
+    end
+end
+
 function FBT:CreateStatsPanel()
     if ui.panel then
         return
     end
 
-    local panel = CreateFrame("Frame", "XiusXPRepTrackerStatsPanel", UIParent, "BackdropTemplate")
+    local panel = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
     panel:SetSize(PANEL_WIDTH, PANEL_HEIGHT)
     panel:SetFrameStrata("MEDIUM")
     panel:SetFrameLevel(85)
@@ -2546,10 +3092,16 @@ function FBT:CreateStatsPanel()
         if button ~= "LeftButton" or (FBT.db and FBT.db.panelLocked) then
             return
         end
+        local startX = GetCursorPosition()
+        local startW = panel:GetWidth()
+        local startScale = panel:GetEffectiveScale()
+        if ValueHidden(startX) or ValueHidden(startW) or ValueHidden(startScale) then
+            return
+        end
         ui.panelSizing = true
-        ui.panelSizeStartX = GetCursorPosition()
-        ui.panelSizeStartW = panel:GetWidth()
-        ui.panelSizeScale = panel:GetEffectiveScale() or 1
+        ui.panelSizeStartX = startX
+        ui.panelSizeStartW = startW
+        ui.panelSizeScale = startScale
         panel:SetScript("OnUpdate", PanelOnUpdate)
     end)
 
@@ -2579,8 +3131,8 @@ function FBT:CreateUI()
         return
     end
 
-    local card = CreateFrame("Frame", "XiusXPRepTrackerFrame", UIParent, "BackdropTemplate")
-    card:SetSize(CARD_WIDTH, HEIGHT_COLLAPSED)
+    local card = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
+    card:SetSize(self.db and self.db.width or CARD_WIDTH, CardCollapsedHeight())
     card:SetFrameStrata("MEDIUM")
     card:SetFrameLevel(80)
     card:SetClampedToScreen(true)
@@ -2611,19 +3163,28 @@ function FBT:CreateUI()
     local header = CreateFrame("Frame", nil, card)
     header:SetPoint("TOPLEFT", PAD, -PAD)
     header:SetPoint("TOPRIGHT", -PAD, -PAD)
-    header:SetHeight(BADGE_SIZE)
+    header:SetHeight(HEADER_H)
 
-    local badge = CreateFrame("Frame", nil, header)
+    local badge = CreateFrame("Frame", nil, header, "BackdropTemplate")
     badge:SetSize(BADGE_SIZE, BADGE_SIZE)
     badge:SetPoint("LEFT", 0, 0)
-    CircleTex(badge, "BACKGROUND", BADGE_SIZE, COLOR.goldDim[1], COLOR.goldDim[2], COLOR.goldDim[3], 1)
-    CircleTex(badge, "BORDER", BADGE_SIZE - 3, 0.08, 0.08, 0.09, 1)
-    CircleTex(badge, "ARTWORK", BADGE_SIZE - 7, COLOR.gold[1], COLOR.gold[2], COLOR.gold[3], 0.95)
-    CircleTex(badge, "OVERLAY", BADGE_SIZE - 11, 0.09, 0.09, 0.10, 1)
+    badge:SetBackdrop({
+        bgFile = "Interface\\Buttons\\WHITE8X8",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        edgeSize = 10,
+        insets = { left = 3, right = 3, top = 3, bottom = 3 },
+    })
+    badge:SetBackdropColor(0.08, 0.08, 0.10, 0.95)
+    badge:SetBackdropBorderColor(212 / 255, 175 / 255, 55 / 255, 1)
+    local gloss = badge:CreateTexture(nil, "ARTWORK")
+    gloss:SetPoint("TOPLEFT", 4, -4)
+    gloss:SetPoint("TOPRIGHT", -4, -4)
+    gloss:SetHeight(1)
+    gloss:SetColorTexture(1, 0.92, 0.7, 0.35)
     local levelText = badge:CreateFontString(nil, "OVERLAY")
     levelText:SetPoint("CENTER", 0, 0)
-    SetFont(levelText, GameFontNormalLarge, 13, "OUTLINE")
-    levelText:SetTextColor(1, 0.95, 0.75, 1)
+    SetFont(levelText, GameFontNormalLarge, 16, "OUTLINE")
+    levelText:SetTextColor(1, 209 / 255, 0, 1)
     levelText:SetText("1")
 
     local barColumn = CreateFrame("Frame", nil, header)
@@ -2635,7 +3196,7 @@ function FBT:CreateUI()
     local leftLabel = barColumn:CreateFontString(nil, "OVERLAY")
     leftLabel:SetPoint("TOPLEFT", 0, -1)
     SetFont(leftLabel, GameFontHighlightSmall, 11)
-    leftLabel:SetTextColor(COLOR.muted[1], COLOR.muted[2], COLOR.muted[3], 1)
+    leftLabel:SetTextColor(1, 1, 1, 1)
     leftLabel:SetJustifyH("LEFT")
     leftLabel:SetText("Experience")
 
@@ -2668,8 +3229,8 @@ function FBT:CreateUI()
     ui.xpBar = xpBar
     ui.repBar = repBar
     ui.expanded = false
-    ui.currentHeight = HEIGHT_COLLAPSED
-    ui.targetHeight = HEIGHT_COLLAPSED
+    ui.currentHeight = CardCollapsedHeight()
+    ui.targetHeight = CardCollapsedHeight()
     ui.growUp = true
     ui.statsHost = card
 
@@ -2688,10 +3249,16 @@ function FBT:CreateUI()
         if button ~= "LeftButton" or (FBT.db and FBT.db.isLocked) then
             return
         end
+        local startX = GetCursorPosition()
+        local startW = card:GetWidth()
+        local startScale = card:GetEffectiveScale()
+        if ValueHidden(startX) or ValueHidden(startW) or ValueHidden(startScale) then
+            return
+        end
         ui.sizing = true
-        ui.sizeStartX = GetCursorPosition()
-        ui.sizeStartW = card:GetWidth()
-        ui.sizeScale = card:GetEffectiveScale() or 1
+        ui.sizeStartX = startX
+        ui.sizeStartW = startW
+        ui.sizeScale = startScale
         EnsureAnim()
     end)
     grip:SetScript("OnEnter", OnCardEnter)
@@ -2716,15 +3283,26 @@ function FBT:CreateUI()
 
     self:RestoreCardPosition()
     LayoutStatsGrid()
-    card:SetScript("OnSizeChanged", function()
+    card:SetScript("OnSizeChanged", function(_, width)
+        if ui.cardLayoutWidth == width then
+            return
+        end
+        ui.cardLayoutWidth = width
         LayoutStatsGrid()
     end)
     if ui.grip then
         ui.grip:SetShown(not (self.db and self.db.isLocked))
     end
-    self:HideBlizzardTrackingBars()
-    self:ApplyStatsDisplayMode()
-    self:Refresh()
+    self:ApplyChrome()
+    self:ApplyCardHeight()
+    if self.db and self.db.enabled == false then
+        self:ApplyVisibility()
+    else
+        self:HideBlizzardTrackingBars()
+        self:ApplyStatsDisplayMode()
+        self:Refresh()
+    end
+    self:RegisterFrameMovers()
     if C_Timer and C_Timer.After then
         C_Timer.After(0, function()
             FBT:RestoreCardPosition()
@@ -2802,6 +3380,93 @@ function OnXPUpdate(overrideLevel)
     FBT:RequestRefresh()
 end
 
+local function FactionTotal()
+    if C_Reputation and C_Reputation.GetNumFactions then
+        local ok, count = pcall(C_Reputation.GetNumFactions)
+        if ok and type(count) == "number" and not ValueHidden(count) then
+            return count
+        end
+    end
+    if GetNumFactions then
+        local ok, count = pcall(GetNumFactions)
+        if ok and type(count) == "number" and not ValueHidden(count) then
+            return count
+        end
+    end
+    return 0
+end
+
+local function FactionRow(index)
+    if C_Reputation and C_Reputation.GetFactionDataByIndex then
+        local ok, data = pcall(C_Reputation.GetFactionDataByIndex, index)
+        if ok and type(data) == "table" and not ValueHidden(data) then
+            local id = data.factionID
+            local standing = data.currentStanding
+            if ValueHidden(id) or type(id) ~= "number" then
+                id = 0
+            end
+            if ValueHidden(standing) or type(standing) ~= "number" then
+                standing = nil
+            end
+            local header = (not ValueHidden(data.isHeader)) and data.isHeader and true or false
+            local watched = (not ValueHidden(data.isWatched)) and data.isWatched and true or false
+            return id, standing, header, watched
+        end
+    end
+    if not GetFactionInfo then
+        return nil
+    end
+    local ok, _, _, _, _, _, barValue, _, _, isHeader, _, _, isWatched, _, factionID = pcall(GetFactionInfo, index)
+    if not ok or ValueHidden(barValue) or ValueHidden(isHeader) or ValueHidden(factionID) then
+        return nil
+    end
+    if type(factionID) ~= "number" then
+        factionID = 0
+    end
+    if type(barValue) ~= "number" then
+        barValue = nil
+    end
+    return factionID, barValue, isHeader and true or false, (not ValueHidden(isWatched)) and isWatched and true or false
+end
+
+local function WatchFaction(index, factionID)
+    if factionID and factionID > 0 and C_Reputation and C_Reputation.SetWatchedFactionByID then
+        if pcall(C_Reputation.SetWatchedFactionByID, factionID) then
+            return
+        end
+    end
+    if SetWatchedFactionIndex and index then
+        pcall(SetWatchedFactionIndex, index)
+    end
+end
+
+local function TrackReputationGain()
+    if not FBT.db or not FBT.db.autoTrackRep then
+        factionScanReady = false
+        return
+    end
+    local bestIndex, bestID
+    local count = FactionTotal()
+    for i = 1, count do
+        local id, standing, isHeader, isWatched = FactionRow(i)
+        if id and id > 0 and not isHeader and type(standing) == "number" then
+            local previous = factionStanding[id]
+            factionStanding[id] = standing
+            if factionScanReady and previous and standing > previous and not isWatched then
+                bestIndex = i
+                bestID = id
+            end
+        end
+    end
+    factionScanReady = true
+    if not bestID then
+        return
+    end
+    WatchFaction(bestIndex, bestID)
+    watchedCache = nil
+    watchedCacheValid = false
+end
+
 local function SafeRegisterEvent(frame, eventName)
     if C_EventUtils and C_EventUtils.IsEventValid then
         if C_EventUtils.IsEventValid(eventName) then
@@ -2844,6 +3509,7 @@ function FBT:RegisterTracking()
             RestorePlayedChatFrames()
             FBT:RequestRefresh(true)
         elseif event == "UPDATE_FACTION" or event == "MAJOR_FACTION_RENOWN_LEVEL_CHANGED" then
+            TrackReputationGain()
             watchedCache = nil
             watchedCacheValid = false
             CacheFactionBaseline(false)
@@ -2901,6 +3567,13 @@ function FBT:RegisterTracking()
             end
             FBT:StartSession()
         elseif event == "PLAYER_REGEN_ENABLED" or event == "EDIT_MODE_LAYOUT_UPDATED" then
+            if event == "PLAYER_REGEN_ENABLED" and pendingLayout then
+                pendingLayout = false
+                FBT:RestoreCardPosition()
+                if IsSeparateStatsMode() then
+                    FBT:RestorePanelPosition()
+                end
+            end
             FBT:HideBlizzardTrackingBars(true)
         end
     end)
@@ -2913,10 +3586,6 @@ loader:RegisterEvent("PLAYER_LOGIN")
 loader:SetScript("OnEvent", function(self, event, name)
     if event == "ADDON_LOADED" and name == ADDON then
         FBT:InitDB()
-        if FBT.ApplyLootVendorSettings then
-            FBT:ApplyLootVendorSettings("fasterLoot")
-        end
-        FBT:CreateOptions()
         FBT:CreateUI()
         FBT:RegisterTracking()
         FBT:HideBlizzardTrackingBars()
@@ -2926,9 +3595,6 @@ loader:SetScript("OnEvent", function(self, event, name)
         end
         if IsLoggedIn and IsLoggedIn() then
             FBT:StartSession()
-            if FBT.QueueMaxRankScan then
-                FBT:QueueMaxRankScan("login")
-            end
         end
         self:UnregisterEvent("ADDON_LOADED")
     elseif event == "PLAYER_LOGIN" then

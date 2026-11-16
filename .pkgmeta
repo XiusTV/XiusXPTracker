@@ -1,10 +1,2 @@
-package-as: XiusXPRepTracker
-
-manual-changelog: CHANGELOG.md
-
-ignore:
-  - README.md
-  - README*
-  - .git*
-  - .github
-  - .pkgmeta
+required-dependencies:
+  - xius-core
