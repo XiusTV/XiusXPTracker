@@ -3,9 +3,10 @@
     Saved variables and slash commands. The options window is XiusCoreSettingsLib.
 ]]
 
-local ADDON, FBT = ...
+local addonName, ns = ...
+local ADDON, FBT = addonName, ns
 
-local XiusCore = _G.XiusCore or _G.XiusUI or _G.XiusCoreSettingsLib
+local XiusCore = _G.XiusCore or _G.XiusCoreSettingsLib
 if not XiusCore and C_AddOns and C_AddOns.IsAddOnLoaded then
     local ok, loaded = pcall(C_AddOns.IsAddOnLoaded, "XiusCore")
     XiusCore = ok and loaded and true or false
@@ -20,14 +21,21 @@ end
 
 FBT.ADDON = ADDON
 FBT.TITLE = "Xius XP/Rep Tracker"
-FBT.DB_VERSION = 13
+FBT.DB_VERSION = 14
 
 FBT.defaults = {
-    dbVersion = 13,
+    dbVersion = 14,
     enabled = true,
     barStyle = "blizzard",
     autoTrackRep = false,
+    autoTrackRepIgnoreExalted = true,
+    autoTrackRepOnlyOutOfCombat = false,
+    repPickerMode = "AUTO",
     cardHeight = 64,
+    scale = 1,
+    xpColor = { 122 / 255, 50 / 255, 201 / 255 },
+    restedColor = { 31 / 255, 139 / 255, 255 },
+    repColor = { 0.36, 0.70, 0.92 },
     -- EMBEDDED = stats expand on the XP/rep card (hover/click).
     -- SEPARATE = always-on movable stats box; card stays collapsed.
     statsDisplayMode = "EMBEDDED",
@@ -35,10 +43,12 @@ FBT.defaults = {
     showXPBar = true,
     showRepBar = true,
     showSessionTime = true,
+    showInstanceTime = true,
     showTimeLevel = true,
     showTimePlayed = true,
     showXPHour = true,
     showTTL = true,
+    showOverallTTL = true,
     showKTL = true,
     showQTL = true,
     showGoldSession = true,
@@ -48,6 +58,9 @@ FBT.defaults = {
     showRepHour = true,
     showRepNextRank = true,
     showRepExalted = true,
+    -- When true, entering a new instance starts a fresh instance run timer
+    -- (shown as INSTANCE TIME while inside). Session time still tracks login.
+    resetInstanceTimerOnEnter = true,
     growthDirection = "AUTO",
     isLocked = false,
     point = "BOTTOM",
@@ -149,21 +162,6 @@ function FBT:InitDB()
         db.panelWidth = 340
         db.panelY = db.panelY or 80
     end
-    if version < 7 then
-        if db.fasterLoot == nil then
-            db.fasterLoot = true
-        end
-        if db.autoSellJunk == nil then
-            db.autoSellJunk = true
-        end
-        db.dbVersion = 7
-    end
-    if version < 8 then
-        if db.trainAllButton == nil then
-            db.trainAllButton = true
-        end
-        db.dbVersion = 8
-    end
     if version < 9 then
         if db.showTimeLevel == nil then
             db.showTimeLevel = true
@@ -172,18 +170,6 @@ function FBT:InitDB()
             db.showTimePlayed = true
         end
         db.dbVersion = 9
-    end
-    if version < 10 then
-        if db.maxRankActionBars == nil then
-            db.maxRankActionBars = true
-        end
-        db.dbVersion = 10
-    end
-    if version < 11 then
-        if db.autoRepair == nil then
-            db.autoRepair = true
-        end
-        db.dbVersion = 11
     end
     if version < 12 then
         if db.panelPoint == "TOPLEFT" and db.panelRelativePoint == "TOPLEFT" and db.panelX == 0 and db.panelY == 0 then
@@ -194,6 +180,12 @@ function FBT:InitDB()
         end
         db.dbVersion = 12
     end
+    -- Purge legacy QoL keys now owned by XiusCore
+    db.fasterLoot = nil
+    db.autoSellJunk = nil
+    db.trainAllButton = nil
+    db.maxRankActionBars = nil
+    db.autoRepair = nil
     if version < 13 then
         if db.enabled == nil then
             db.enabled = true
@@ -218,18 +210,103 @@ function FBT:InitDB()
     if db.autoTrackRep == nil then
         db.autoTrackRep = false
     end
+    if db.autoTrackRepIgnoreExalted == nil then
+        db.autoTrackRepIgnoreExalted = true
+    end
+    if db.autoTrackRepOnlyOutOfCombat == nil then
+        db.autoTrackRepOnlyOutOfCombat = false
+    end
+    if db.repPickerMode ~= "MANUAL" then
+        db.repPickerMode = "AUTO"
+    end
     if type(db.cardHeight) ~= "number" then
         db.cardHeight = self.defaults.cardHeight
+    end
+    if type(db.scale) ~= "number" then
+        db.scale = self.defaults.scale
+    end
+    if type(ForeverBarTrackerCharDB) ~= "table" then
+        ForeverBarTrackerCharDB = {}
+    end
+    if type(ForeverBarTrackerCharDB.careerLevelStats) ~= "table" then
+        ForeverBarTrackerCharDB.careerLevelStats = {}
+    end
+    self.charDB = ForeverBarTrackerCharDB
+    self.careerLevelStats = ForeverBarTrackerCharDB.careerLevelStats
+
+    if db.showOverallTTL == nil then
+        db.showOverallTTL = true
     end
     db.width = math.max(660, math.min(1200, db.width))
     db.panelWidth = math.max(280, math.min(520, db.panelWidth))
     db.cardHeight = math.max(62, math.min(80, db.cardHeight))
+    db.scale = math.max(0.75, math.min(1.5, db.scale))
+
+    -- Join XiusCore profile table so /xius profile switches keep XP/Rep settings.
+    if type(XiusUIDB) ~= "table" then
+        XiusUIDB = {}
+    end
+    if type(XiusUIDB.xprep) ~= "table" then
+        XiusUIDB.xprep = self.db
+    elseif XiusUIDB.xprep ~= self.db then
+        for key, value in pairs(XiusUIDB.xprep) do
+            if self.db[key] == nil then
+                self.db[key] = value
+            end
+        end
+        XiusUIDB.xprep = self.db
+    end
+    ForeverBarTrackerDB = self.db
+end
+
+-- Keep ForeverBarTrackerDB, XiusUIDB.xprep, and FBT.db aliased after profile switches.
+function FBT:SyncProfileDB()
+    if type(XiusUIDB) == "table" and type(XiusUIDB.xprep) == "table" then
+        if self.db ~= XiusUIDB.xprep then
+            self.db = XiusUIDB.xprep
+        end
+        if ForeverBarTrackerDB ~= XiusUIDB.xprep then
+            ForeverBarTrackerDB = XiusUIDB.xprep
+        end
+    elseif type(ForeverBarTrackerDB) == "table" then
+        self.db = ForeverBarTrackerDB
+        if type(XiusUIDB) == "table" then
+            XiusUIDB.xprep = ForeverBarTrackerDB
+        end
+    end
+    if type(self.db) == "table" then
+        CopyDefaults(self.defaults, self.db)
+        local db = self.db
+        db.width = math.max(660, math.min(1200, db.width or self.defaults.width))
+        db.panelWidth = math.max(280, math.min(520, db.panelWidth or self.defaults.panelWidth))
+        db.cardHeight = math.max(62, math.min(80, db.cardHeight or self.defaults.cardHeight))
+        db.scale = math.max(0.75, math.min(1.5, db.scale or self.defaults.scale))
+        if db.repPickerMode ~= "MANUAL" then
+            db.repPickerMode = "AUTO"
+        end
+    end
 end
 
 function FBT:NotifySettingsChanged(key)
+    if self.SyncProfileDB then
+        self:SyncProfileDB()
+    end
     if self.ApplySettings then
         self:ApplySettings(key)
     end
+end
+
+function FBT:ResetCareerStats()
+    if type(ForeverBarTrackerCharDB) ~= "table" then
+        ForeverBarTrackerCharDB = {}
+    end
+    ForeverBarTrackerCharDB.careerLevelStats = {}
+    self.charDB = ForeverBarTrackerCharDB
+    self.careerLevelStats = ForeverBarTrackerCharDB.careerLevelStats
+    if self.OnCareerStatsReset then
+        self:OnCareerStatsReset()
+    end
+    self:Print("Career leveling history reset.")
 end
 
 function FBT:Print(msg)
@@ -242,8 +319,22 @@ function FBT:OpenOptions()
         return
     end
     local Lib = _G.XiusCoreSettingsLib
-    if Lib and Lib.OpenModule then
+    if not Lib then
+        return
+    end
+    if Lib.OpenModule then
         Lib:OpenModule("XPRep")
+        if C_Timer and C_Timer.After and self.NudgePanelClearOfOptions then
+            C_Timer.After(0, function()
+                FBT:NudgePanelClearOfOptions()
+            end)
+        elseif self.NudgePanelClearOfOptions then
+            self:NudgePanelClearOfOptions()
+        end
+        return
+    end
+    if Lib.Open then
+        Lib:Open("XPRep")
     end
 end
 
@@ -278,7 +369,7 @@ function FBT:HandleSlash(msg)
             self.db.panelLocked = false
             self:NotifySettingsChanged("isLocked")
             self:NotifySettingsChanged("panelLocked")
-            self:Print("Card and stats box unlocked. Shift-drag to move.")
+            self:Print("Card and stats box unlocked. Use Unlock Frames in /xius to move.")
         end
     else
         self:Print("Commands: /xt config  |  /xt lock  |  /xt panel  |  /xt reset")
@@ -292,20 +383,5 @@ SLASH_XIUSXPTRACKER3 = "/xxp"
 SLASH_XIUSXPTRACKER4 = "/xrep"
 SLASH_XIUSXPTRACKER5 = "/xxr"
 SlashCmdList.XIUSXPTRACKER = function(msg)
-    FBT:HandleSlash(msg)
-end
-
-SLASH_XIUSXP1 = "/xxp"
-SlashCmdList.XIUSXP = function(msg)
-    FBT:HandleSlash(msg)
-end
-
-SLASH_XIUSREP1 = "/xrep"
-SlashCmdList.XIUSREP = function(msg)
-    FBT:HandleSlash(msg)
-end
-
-SLASH_XIUSXPOPTIONS1 = "/xxr"
-SlashCmdList.XIUSXPOPTIONS = function(msg)
     FBT:HandleSlash(msg)
 end

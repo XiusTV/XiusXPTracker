@@ -4,9 +4,10 @@
     session engine, Blizzard bar replacement.
 ]]
 
-local ADDON, FBT = ...
+local addonName, ns = ...
+local ADDON, FBT = addonName, ns
 
-local XiusCore = _G.XiusCore or _G.XiusUI or _G.XiusCoreSettingsLib
+local XiusCore = _G.XiusCore or _G.XiusCoreSettingsLib
 if not XiusCore and C_AddOns and C_AddOns.IsAddOnLoaded then
     local ok, loaded = pcall(C_AddOns.IsAddOnLoaded, "XiusCore")
     XiusCore = ok and loaded and true or false
@@ -69,28 +70,23 @@ local function SavedColor(saved, fallback)
     end
     return r, g, b
 end
-local NUM_COLUMNS = 7
+local NUM_COLUMNS = 8
 local PANEL_COLUMNS = 3
 local LEFT_MARGIN = 10
 local RIGHT_MARGIN = 10
+local CAREER_IDLE_THRESHOLD = 120
 
 local COLOR = {
     bg = { 0.06, 0.06, 0.08, 0.92 },
     border = { 1.0, 0.82, 0.35, 1 },
-    header = { 16 / 255, 17 / 255, 20 / 255, 0.90 },
     gold = { 1, 209 / 255, 0 },
-    goldDim = { 140 / 255, 115 / 255, 67 / 255 },
-    muted = { 242 / 255, 244 / 255, 248 / 255 },
     label = { 154 / 255, 161 / 255, 178 / 255 },
     value = { 1, 1, 1 },
     xp = { 122 / 255, 50 / 255, 201 / 255 },
-    xpRested = { 31 / 255, 139 / 255, 255 },
     rest = { 31 / 255, 139 / 255, 255 },
     rep = { 0.36, 0.70, 0.92 },
     trough = { 9 / 255, 10 / 255, 12 / 255, 0.85 },
     trim = { 122 / 255, 99 / 255, 50 / 255, 1 },
-    footer = { 154 / 255, 161 / 255, 178 / 255 },
-    good = { 0.45, 0.85, 0.50 },
     bad = { 0.90, 0.35, 0.32 },
     btn = { 24 / 255, 25 / 255, 29 / 255, 1 },
     btnHover = { 0.16, 0.14, 0.08, 1 },
@@ -121,15 +117,18 @@ local BLIZZARD_BAR_NAMES = {
     "ArtifactWatchBar",
 }
 
-local PORTRAIT_MASK = "Interface\\CharacterFrame\\TempPortraitAlphaMask"
-
 local ui = {}
 local session = {
     killXP = {},
     questXP = {},
+    avgKillXP = 0,
+    avgQuestXP = 0,
     xpEarned = 0,
     startingRep = 0,
     startMoney = 0,
+    lastInstanceID = nil,
+    instanceStartTime = nil,
+    inInstance = false,
 }
 local hideToken = 0
 local factionStanding = {}
@@ -142,6 +141,7 @@ local watchedInfoTable = {}
 local LayoutStatsGrid
 local EnsureAnim
 local OnXPUpdate
+local FactionBarValues
 local OnCardEnter
 local OnCardLeave
 local OnCardDragStop
@@ -155,16 +155,29 @@ local playedLastRequest = 0
 local suppressedChatFrames = {}
 local RequestPlayedTime
 local RestorePlayedChatFrames
+local careerLastTickAt = 0
+local careerLastActivityAt = 0
+local careerPaceDirty = true
+local cachedCareerRate = 0
+local cachedCareerLevels = 0
 
 local function ValueHidden(v)
     if v == nil then
         return false
     end
-    if issecretvalue and issecretvalue(v) then
-        return true
+    -- Forever can throw from secret APIs; treat failure as hidden so XP/rep
+    -- math never operates on restricted combat numbers.
+    if issecretvalue then
+        local ok, secret = pcall(issecretvalue, v)
+        if not ok or secret then
+            return true
+        end
     end
-    if canaccessvalue and not canaccessvalue(v) then
-        return true
+    if canaccessvalue then
+        local ok, allowed = pcall(canaccessvalue, v)
+        if not ok or not allowed then
+            return true
+        end
     end
     return false
 end
@@ -329,37 +342,72 @@ end
 
 local cachedMaxLevel
 
+local function SafeUnitLevel(unit)
+    if not UnitLevel or unit == nil then
+        return nil
+    end
+    local ok, level = pcall(UnitLevel, unit)
+    if not ok then
+        return nil
+    end
+    return level
+end
+
 local function GetPlayerMaxLevel()
     if cachedMaxLevel then
         return cachedMaxLevel
     end
-    -- Do not cache a fallback while the expansion API exists but is not ready yet.
-    local result
-    local apiReady = false
+    -- Forever can expose retail expansion helpers that return 70/80 while
+    -- MAX_PLAYER_LEVEL / GetMaxPlayerLevel stay at the real Forever cap (60).
+    -- Prefer the smallest positive candidate so max-level rep fallback still runs.
+    local fallback = PublicNumber(MAX_PLAYER_LEVEL, 60)
+    local best = nil
+    local function consider(raw)
+        if ValueHidden(raw) or type(raw) ~= "number" then
+            return
+        end
+        local n = PublicNumber(raw, 0)
+        if n > 0 and (not best or n < best) then
+            best = n
+        end
+    end
+    if GetMaxPlayerLevel then
+        local ok, value = pcall(GetMaxPlayerLevel)
+        if ok then
+            consider(value)
+        end
+    end
+    consider(fallback)
     if GetMaxLevelForPlayerExpansion then
-        result = GetMaxLevelForPlayerExpansion()
-        if not (ValueHidden(result)) and type(result) == "number" then
-            apiReady = true
-        end
-    elseif GetMaxLevelForLatestExpansion then
-        result = GetMaxLevelForLatestExpansion()
-        if not (ValueHidden(result)) and type(result) == "number" then
-            apiReady = true
+        local ok, value = pcall(GetMaxLevelForPlayerExpansion)
+        if ok then
+            consider(value)
         end
     end
-    if not apiReady then
-        return PublicNumber(MAX_PLAYER_LEVEL, 70)
+    if GetMaxLevelForLatestExpansion then
+        local ok, value = pcall(GetMaxLevelForLatestExpansion)
+        if ok then
+            consider(value)
+        end
     end
-    result = PublicNumber(result, 70)
-    if result > 0 then
-        cachedMaxLevel = result
-        return result
+    if best and best > 0 then
+        -- Only cache once the player is already at the candidate, or when
+        -- GetMaxPlayerLevel / MAX_PLAYER_LEVEL agreed on a Forever-scale cap.
+        local playerLevel = PublicNumber(SafeUnitLevel("player"), 1)
+        if best <= 70 or playerLevel >= best or best == fallback then
+            cachedMaxLevel = best
+        end
+        return best
     end
-    return 70
+    return fallback
 end
 
 local function IsPlayerMaxLevel()
-    return PublicNumber(UnitLevel("player"), 1) >= GetPlayerMaxLevel()
+    return PublicNumber(SafeUnitLevel("player"), 1) >= GetPlayerMaxLevel()
+end
+
+local function InvalidateMaxLevelCache()
+    cachedMaxLevel = nil
 end
 
 local function IsSeparateStatsMode()
@@ -377,10 +425,62 @@ local STANDING_FALLBACK = {
     [8] = "Exalted",
 }
 
+local STANDING_CODES = {
+    [1] = "HAT",
+    [2] = "HOS",
+    [3] = "UNF",
+    [4] = "NEU",
+    [5] = "FRD",
+    [6] = "HON",
+    [7] = "REV",
+    [8] = "EXA",
+}
+
+local STANDING_COLOR_FALLBACK = {
+    [1] = { 0.80, 0.13, 0.13 },
+    [2] = { 1.00, 0.00, 0.00 },
+    [3] = { 0.93, 0.40, 0.13 },
+    [4] = { 1.00, 1.00, 0.00 },
+    [5] = { 0.00, 0.60, 0.00 },
+    [6] = { 0.00, 0.60, 0.00 },
+    [7] = { 0.00, 0.60, 0.00 },
+    [8] = { 0.00, 0.60, 0.80 },
+}
+
 local function StandingName(reaction)
     local idx = PublicNumber(reaction, 4)
     local label = PublicString(_G["FACTION_STANDING_LABEL" .. tostring(idx)], nil)
     return label or STANDING_FALLBACK[idx] or "Unknown"
+end
+
+local function StandingCode(info)
+    if not info then
+        return "REP"
+    end
+    if info.isParagon then
+        return "PAR"
+    end
+    if info.isMajorFaction and info.renownLevel then
+        return "R" .. tostring(info.renownLevel)
+    end
+    local idx = Clamp(PublicNumber(info.reaction, 4), 1, 8)
+    return STANDING_CODES[idx] or "NEU"
+end
+
+local function StandingColor(reaction)
+    local idx = Clamp(PublicNumber(reaction, 4), 1, 8)
+    local colors = _G.FACTION_BAR_COLORS
+    if type(colors) == "table" and type(colors[idx]) == "table" then
+        local c = colors[idx]
+        local r = PublicNumber(c.r, nil)
+        local g = PublicNumber(c.g, nil)
+        local b = PublicNumber(c.b, nil)
+        if r and g and b then
+            return r, g, b
+        end
+    end
+    local fb = STANDING_COLOR_FALLBACK[idx] or STANDING_COLOR_FALLBACK[4]
+    return fb[1], fb[2], fb[3]
 end
 
 local function ApplyFriendship(info)
@@ -511,7 +611,8 @@ local function ApplyParagon(info)
     info.currentStanding = currentValue % threshold
     info.currentReactionThreshold = 0
     info.nextReactionThreshold = threshold
-    info.isMaxRank = false
+    -- Paragon is post-Exalted: treat as max standing so AUTO can pick another faction.
+    info.isMaxRank = true
     return info
 end
 
@@ -616,6 +717,186 @@ function FBT:GetWatchedFaction(force)
     return info
 end
 
+local factionScanPool = {}
+local factionScanCount = 0
+
+local function GetFactionCount()
+    if C_Reputation and C_Reputation.GetNumFactions then
+        local ok, count = pcall(C_Reputation.GetNumFactions)
+        if ok and type(count) == "number" and not ValueHidden(count) then
+            return count
+        end
+    end
+    if GetNumFactions then
+        local ok, count = pcall(GetNumFactions)
+        if ok and type(count) == "number" and not ValueHidden(count) then
+            return count
+        end
+    end
+    return 0
+end
+
+local function IsFactionRowInactive(index)
+    if C_Reputation and C_Reputation.IsFactionInactive then
+        local ok, inactive = pcall(C_Reputation.IsFactionInactive, index)
+        if ok and not ValueHidden(inactive) and inactive then
+            return true
+        end
+    elseif IsFactionInactive then
+        local ok, inactive = pcall(IsFactionInactive, index)
+        if ok and not ValueHidden(inactive) and inactive then
+            return true
+        end
+    end
+    return false
+end
+
+local function SetWatchedFactionSafe(index, factionID)
+    if factionID and factionID > 0 and C_Reputation and C_Reputation.SetWatchedFactionByID then
+        if pcall(C_Reputation.SetWatchedFactionByID, factionID) then
+            return true
+        end
+    end
+    if SetWatchedFactionIndex and index then
+        if pcall(SetWatchedFactionIndex, index) then
+            return true
+        end
+    end
+    return false
+end
+
+local function ScanActiveFactions()
+    factionScanCount = 0
+    local count = GetFactionCount()
+    local useModern = C_Reputation and C_Reputation.GetFactionDataByIndex
+    for i = 1, count do
+        local name, factionID, reaction, standing, minT, maxT, isHeader, hasRep, isWatched
+        if useModern then
+            local okRow, data = pcall(C_Reputation.GetFactionDataByIndex, i)
+            if not okRow then
+                data = nil
+            end
+            if type(data) == "table" and not ValueHidden(data) then
+                name = PublicString(data.name, nil)
+                factionID = PublicNumber(data.factionID, 0)
+                reaction = PublicNumber(data.reaction, 4)
+                standing = PublicNumber(data.currentStanding, 0)
+                minT = PublicNumber(data.currentReactionThreshold, 0)
+                maxT = PublicNumber(data.nextReactionThreshold, 0)
+                isHeader = (not ValueHidden(data.isHeader)) and data.isHeader and true or false
+                hasRep = (not ValueHidden(data.isHeaderWithRep)) and data.isHeaderWithRep and true or false
+                isWatched = (not ValueHidden(data.isWatched)) and data.isWatched and true or false
+            end
+        elseif GetFactionInfo then
+            local n, _, standingID, barMin, barMax, barValue, _, _, hdr, _, hRep, watched, _, fID = GetFactionInfo(i)
+            name = PublicString(n, nil)
+            factionID = PublicNumber(fID, 0)
+            reaction = PublicNumber(standingID, 4)
+            standing = PublicNumber(barValue, 0)
+            minT = PublicNumber(barMin, 0)
+            maxT = PublicNumber(barMax, 0)
+            isHeader = (not ValueHidden(hdr)) and hdr and true or false
+            hasRep = (not ValueHidden(hRep)) and hRep and true or false
+            isWatched = (not ValueHidden(watched)) and watched and true or false
+        end
+        if name and name ~= "" and (not isHeader or hasRep) and not IsFactionRowInactive(i) then
+            factionScanCount = factionScanCount + 1
+            local entry = factionScanPool[factionScanCount]
+            if not entry then
+                entry = {}
+                factionScanPool[factionScanCount] = entry
+            end
+            entry.index = i
+            entry.name = name
+            entry.factionID = factionID
+            entry.reaction = reaction
+            entry.currentStanding = standing
+            entry.currentReactionThreshold = minT
+            entry.nextReactionThreshold = maxT
+            entry.isWatched = isWatched
+            entry.isExalted = reaction >= 8
+        end
+    end
+    for i = factionScanCount + 1, #factionScanPool do
+        factionScanPool[i] = nil
+    end
+    return factionScanPool, factionScanCount
+end
+
+local function FindBestNonExaltedFaction()
+    local list, count = ScanActiveFactions()
+    local bestNonExalted
+    local bestAny
+    for i = 1, count do
+        local entry = list[i]
+        if not bestAny or entry.reaction > bestAny.reaction or (entry.reaction == bestAny.reaction and entry.currentStanding > bestAny.currentStanding) then
+            bestAny = entry
+        end
+        if not entry.isExalted then
+            if not bestNonExalted or entry.reaction > bestNonExalted.reaction or (entry.reaction == bestNonExalted.reaction and entry.currentStanding > bestNonExalted.currentStanding) then
+                bestNonExalted = entry
+            end
+        end
+    end
+    return bestNonExalted or bestAny
+end
+
+function FBT:EnsureMaxLevelReputation(forceScan)
+    if not self.db then
+        return nil
+    end
+    local atMax = IsPlayerMaxLevel()
+    if not atMax and (self.db.showXPBar or not self.db.showRepBar) then
+        return self:GetWatchedFaction(forceScan)
+    end
+    local watched = self:GetWatchedFaction(forceScan)
+    local autoMode = self.db.repPickerMode ~= "MANUAL"
+    local watchedExalted = watched and ((watched.reaction or 0) >= 8 or watched.isParagon)
+    local needAutoPick = (watched == nil) or (autoMode and (watched.isMaxRank or watchedExalted))
+    if not needAutoPick then
+        return watched
+    end
+    local best = FindBestNonExaltedFaction()
+    if not best then
+        return watched
+    end
+    if watched and watched.factionID == best.factionID and watched.name == best.name then
+        return watched
+    end
+    local setOk = SetWatchedFactionSafe(best.index, best.factionID)
+    watchedCache = nil
+    watchedCacheValid = false
+    local updated = self:GetWatchedFaction(true)
+    -- Only trust the watched API when the write succeeded AND the watched
+    -- faction is the one we just picked (combat/API rejects leave the old Exalted watched).
+    if setOk and updated and updated.factionID == best.factionID then
+        return updated
+    end
+    -- Fallback if SetWatchedFaction was blocked or delayed: display scanned faction directly.
+    local info = PopulateWatchedTable(
+        best.name,
+        best.factionID,
+        best.reaction,
+        best.currentStanding,
+        best.currentReactionThreshold,
+        best.nextReactionThreshold
+    )
+    ApplyFriendship(info)
+    ApplyMajorFaction(info)
+    ApplyParagon(info)
+    if info.nextReactionThreshold <= info.currentReactionThreshold then
+        info.nextReactionThreshold = info.currentReactionThreshold + 1
+        info.isMaxRank = true
+    elseif not info.isParagon and not info.isFriendship and not info.isMajorFaction
+        and (info.reaction or 4) >= 8 and info.currentStanding >= info.nextReactionThreshold then
+        info.isMaxRank = true
+    end
+    watchedCache = info
+    watchedCacheValid = true
+    watchedCacheTime = GetTime()
+    return info
+end
+
 local function RemainingToNextRank(info)
     if not info or info.isMaxRank then
         return 0
@@ -670,8 +951,157 @@ local function TimeFromRate(remaining, perHour)
     return (remaining / perHour) * 3600
 end
 
-local function AverageKillXP()
-    local list = session.killXP
+local function EnsureCareerTable()
+    if type(ForeverBarTrackerCharDB) ~= "table" then
+        ForeverBarTrackerCharDB = {}
+    end
+    if type(ForeverBarTrackerCharDB.careerLevelStats) ~= "table" then
+        ForeverBarTrackerCharDB.careerLevelStats = {}
+    end
+    FBT.charDB = ForeverBarTrackerCharDB
+    FBT.careerLevelStats = ForeverBarTrackerCharDB.careerLevelStats
+    return ForeverBarTrackerCharDB.careerLevelStats
+end
+
+local function MarkCareerActivity()
+    careerLastActivityAt = GetTime()
+end
+
+local function IsPlayerAFKOrIdle(now)
+    if UnitIsAFK then
+        local ok, afk = pcall(UnitIsAFK, "player")
+        if ok and not ValueHidden(afk) and afk then
+            return true
+        end
+    end
+    if GetUnitSpeed then
+        local ok, speed = pcall(GetUnitSpeed, "player")
+        if ok and not ValueHidden(speed) and type(speed) == "number" and speed > 0 then
+            careerLastActivityAt = now
+            return false
+        end
+    end
+    if IsPlayerMoving then
+        local ok, moving = pcall(IsPlayerMoving)
+        if ok and not ValueHidden(moving) and moving then
+            careerLastActivityAt = now
+            return false
+        end
+    end
+    if careerLastActivityAt <= 0 then
+        careerLastActivityAt = now
+        return false
+    end
+    return (now - careerLastActivityAt) > CAREER_IDLE_THRESHOLD
+end
+
+local function RecordCareerXP(level, xpAmount, xpRequired)
+    if not level or level <= 0 or not xpAmount or xpAmount <= 0 then
+        return
+    end
+    local stats = EnsureCareerTable()
+    local entry = stats[level]
+    if type(entry) ~= "table" then
+        entry = { activeTime = 0, xpGained = 0, xpRequired = xpRequired or 1 }
+        stats[level] = entry
+    end
+    entry.xpGained = (entry.xpGained or 0) + xpAmount
+    if xpRequired and xpRequired > 0 then
+        entry.xpRequired = xpRequired
+    end
+    careerPaceDirty = true
+    MarkCareerActivity()
+end
+
+local function TickCareerActiveTime()
+    if not session.active or (FBT.db and FBT.db.enabled == false) or IsPlayerMaxLevel() then
+        careerLastTickAt = GetTime()
+        return
+    end
+    local now = GetTime()
+    if careerLastTickAt <= 0 then
+        careerLastTickAt = now
+        if careerLastActivityAt <= 0 then
+            careerLastActivityAt = now
+        end
+        return
+    end
+    local dt = now - careerLastTickAt
+    careerLastTickAt = now
+    if dt <= 0 or dt > 5 then
+        return
+    end
+    if IsPlayerAFKOrIdle(now) then
+        return
+    end
+    local level = PublicNumber(UnitLevel("player"), session.lastLevel or 1)
+    if level <= 0 then
+        return
+    end
+    local maxXP = PublicNumber(UnitXPMax("player"), session.lastXPMax or 1)
+    if maxXP <= 0 then
+        maxXP = 1
+    end
+    local stats = EnsureCareerTable()
+    local entry = stats[level]
+    if type(entry) ~= "table" then
+        entry = { activeTime = 0, xpGained = 0, xpRequired = maxXP }
+        stats[level] = entry
+    end
+    entry.activeTime = (entry.activeTime or 0) + dt
+    entry.xpRequired = maxXP
+    careerPaceDirty = true
+end
+
+local function ComputeCareerPace()
+    if not careerPaceDirty then
+        return cachedCareerRate, cachedCareerLevels
+    end
+    local stats = EnsureCareerTable()
+    local weightedRateSum = 0
+    local weightSum = 0
+    local levelsCount = 0
+    for _, entry in pairs(stats) do
+        if type(entry) == "table" and (entry.activeTime or 0) > 0 and (entry.xpGained or 0) > 0 and (entry.xpRequired or 0) > 0 then
+            local levelRatePerHour = (entry.xpGained / entry.activeTime) * 3600
+            local weight = entry.xpRequired
+            weightedRateSum = weightedRateSum + (levelRatePerHour * weight)
+            weightSum = weightSum + weight
+            levelsCount = levelsCount + 1
+        end
+    end
+    cachedCareerLevels = levelsCount
+    cachedCareerRate = weightSum > 0 and (weightedRateSum / weightSum) or 0
+    careerPaceDirty = false
+    return cachedCareerRate, cachedCareerLevels
+end
+
+local function ComputeOverallTTL(xpLeft, sessionXPPerHour, elapsed)
+    local careerRate, levelsCount = ComputeCareerPace()
+    local sessionRate = sessionXPPerHour or 0
+    local blendedRate = 0
+    if careerRate > 0 and sessionRate > 0 then
+        local sessionWeight = Clamp((elapsed / 600) * 0.40, 0.10, 0.40)
+        blendedRate = ((1 - sessionWeight) * careerRate) + (sessionWeight * sessionRate)
+    elseif careerRate > 0 then
+        blendedRate = careerRate
+    elseif sessionRate > 0 then
+        blendedRate = sessionRate
+    end
+    local ttl = TimeFromRate(xpLeft, blendedRate)
+    return ttl, careerRate, blendedRate, levelsCount
+end
+
+function FBT:OnCareerStatsReset()
+    careerLastTickAt = GetTime()
+    careerLastActivityAt = GetTime()
+    careerPaceDirty = true
+    cachedCareerRate = 0
+    cachedCareerLevels = 0
+    self:RefreshStats()
+end
+
+local function RecomputeSampleAverage(list)
     if not list or #list == 0 then
         return 0
     end
@@ -682,38 +1112,44 @@ local function AverageKillXP()
     return total / #list
 end
 
+local function AverageKillXP()
+    return session.avgKillXP or 0
+end
+
 local function AverageQuestXP()
-    local list = session.questXP
-    if not list or #list == 0 then
-        return 0
-    end
-    local total = 0
-    for i = 1, #list do
-        total = total + list[i]
-    end
-    return total / #list
+    return session.avgQuestXP or 0
 end
 
 local function AddKillXP(amount)
     if not amount or amount <= 0 then
         return
     end
-    session.killXP = session.killXP or {}
-    session.killXP[#session.killXP + 1] = amount
-    if #session.killXP > KILL_SAMPLE_SIZE then
-        table.remove(session.killXP, 1)
+    local list = session.killXP
+    if not list then
+        list = {}
+        session.killXP = list
     end
+    list[#list + 1] = amount
+    if #list > KILL_SAMPLE_SIZE then
+        table.remove(list, 1)
+    end
+    session.avgKillXP = RecomputeSampleAverage(list)
 end
 
 local function AddQuestXP(amount)
     if not amount or amount <= 0 then
         return
     end
-    session.questXP = session.questXP or {}
-    session.questXP[#session.questXP + 1] = amount
-    if #session.questXP > QUEST_SAMPLE_SIZE then
-        table.remove(session.questXP, 1)
+    local list = session.questXP
+    if not list then
+        list = {}
+        session.questXP = list
     end
+    list[#list + 1] = amount
+    if #list > QUEST_SAMPLE_SIZE then
+        table.remove(list, 1)
+    end
+    session.avgQuestXP = RecomputeSampleAverage(list)
 end
 
 local function ParseCombatXP(msg)
@@ -729,7 +1165,7 @@ local function ParseCombatXP(msg)
     if not string.find(msg, "dies", 1, true) and string.find(msg, "^You gain ") then
         return nil, false
     end
-    local cleaned = msg:gsub(",", "")
+    local cleaned = string.find(msg, ",", 1, true) and msg:gsub(",", "") or msg
     -- Match the number preceding "experience" first so numbered mob names (e.g. "SI:7 Agent") are skipped.
     local n = cleaned:match("(%d+)%s+[Ee]xperience") or cleaned:match("(%d+)")
     return (n and tonumber(n) or nil), false
@@ -785,6 +1221,110 @@ local function SessionElapsed()
         return 0
     end
     return math.max(0, GetTime() - session.startTime)
+end
+
+local function InstanceElapsed()
+    if not session.instanceStartTime then
+        return 0
+    end
+    local start = session.instanceStartTime
+    if ValueHidden(start) or type(start) ~= "number" then
+        return 0
+    end
+    return math.max(0, GetTime() - start)
+end
+
+local function SyncInstanceRunTimer()
+    local db = FBT.db
+    local allowRestart = not db or db.resetInstanceTimerOnEnter ~= false
+    local inInstance = false
+    local instType
+    if IsInInstance then
+        local ok, inside, itype = pcall(IsInInstance)
+        -- Secret instance flags: leave the live run timer alone (do not wipe on /reload).
+        if not ok or ValueHidden(inside) or ValueHidden(itype) then
+            return
+        end
+        inInstance = inside and true or false
+        instType = itype
+    end
+    -- Ignore open-world / none; track dungeon, raid, arena, pvp.
+    if type(instType) ~= "string" then
+        instType = nil
+    end
+    if not inInstance or instType == nil or instType == "none" then
+        -- PLAYER_ENTERING_WORLD often reports outdoors during the load screen.
+        -- Keep the live run clock until a delayed / instance-info confirm clears it.
+        if session.instanceStartTime and not session._instanceOutdoorsConfirm then
+            session._instanceOutdoorsConfirm = true
+            if C_Timer and C_Timer.After then
+                C_Timer.After(1.25, function()
+                    session._instanceOutdoorsConfirm = nil
+                    SyncInstanceRunTimer()
+                end)
+            end
+            return
+        end
+        session.inInstance = false
+        session.lastInstanceID = nil
+        session.instanceStartTime = nil
+        session._instanceOutdoorsConfirm = nil
+        return
+    end
+    session._instanceOutdoorsConfirm = nil
+
+    local mapID, difficultyID, name = 0, 0, nil
+    if GetInstanceInfo then
+        -- GetInstanceInfo: name, type, difficultyID, difficultyName, maxPlayers,
+        -- dynamicDifficulty, isDynamic, instanceMapID, ...
+        local ok, n, _, diff, _, _, _, _, mid = pcall(GetInstanceInfo)
+        if ok then
+            if not ValueHidden(n) and type(n) == "string" and n ~= "" then
+                name = n
+            end
+            if not ValueHidden(diff) and type(diff) == "number" then
+                difficultyID = diff
+            end
+            if not ValueHidden(mid) and type(mid) == "number" and mid > 0 then
+                mapID = mid
+            end
+        end
+    end
+
+    -- Prefer a unique instance GUID fragment so soft-resets and chained runs get a fresh clock.
+    local guidFragment
+    if UnitGUID then
+        local okGuid, raw = pcall(UnitGUID, "player")
+        if okGuid and not ValueHidden(raw) and type(raw) == "string" then
+            guidFragment = raw:match("^[^%-]+%-%d+%-%d+%-%d+%-%d+%-(%d+)")
+        end
+    end
+
+    local instID
+    if mapID > 0 then
+        instID = tostring(mapID) .. ":" .. tostring(difficultyID)
+        if guidFragment then
+            instID = instID .. ":" .. guidFragment
+        end
+    elseif name then
+        instID = name .. ":" .. tostring(difficultyID)
+        if guidFragment then
+            instID = instID .. ":" .. guidFragment
+        end
+    else
+        instID = guidFragment or (tostring(instType or "instance") .. ":" .. tostring(GetTime()))
+    end
+
+    session.inInstance = true
+    if allowRestart and session.lastInstanceID ~= instID then
+        session.lastInstanceID = instID
+        session.instanceStartTime = GetTime()
+    elseif not session.instanceStartTime then
+        session.lastInstanceID = instID
+        session.instanceStartTime = GetTime()
+    elseif not session.lastInstanceID then
+        session.lastInstanceID = instID
+    end
 end
 
 local function SuppressPlayedOnChatFrame(cf)
@@ -1066,19 +1606,65 @@ function FBT:ApplyCardHeight()
     end
 end
 
+function FBT:ApplyScale()
+    if not self.db then
+        return
+    end
+    if InCombatLockdown and InCombatLockdown() then
+        pendingLayout = true
+        return
+    end
+    local scale = Clamp(self.db.scale or 1, 0.75, 1.5)
+    if ui.card and ui.card.SetScale then
+        ui.card:SetScale(scale)
+    end
+    if ui.panel and ui.panel.SetScale then
+        ui.panel:SetScale(scale)
+    end
+end
+
+local SHADOW_SPECS = {
+    { "TOPLEFT", "TOPRIGHT", true, 4, -4 },
+    { "BOTTOMLEFT", "BOTTOMRIGHT", true, 4, 4 },
+    { "TOPLEFT", "BOTTOMLEFT", false, 4, -4 },
+    { "TOPRIGHT", "BOTTOMRIGHT", false, -4, -4 },
+}
+
+local CARD_BACKDROP = {
+    bgFile = "Interface\\Buttons\\WHITE8X8",
+    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+    edgeSize = 14,
+    insets = { left = 4, right = 4, top = 4, bottom = 4 },
+}
+
+local MINIMAL_BACKDROP = {
+    bgFile = "Interface\\Buttons\\WHITE8X8",
+    edgeFile = "Interface\\Buttons\\WHITE8X8",
+    edgeSize = 1,
+    insets = { left = 1, right = 1, top = 1, bottom = 1 },
+}
+
+local TOOLTIP_BACKDROP = {
+    bgFile = "Interface\\Buttons\\WHITE8X8",
+    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+    edgeSize = 12,
+    insets = { left = 3, right = 3, top = 3, bottom = 3 },
+}
+
+local BADGE_BACKDROP = {
+    bgFile = "Interface\\Buttons\\WHITE8X8",
+    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+    edgeSize = 10,
+    insets = { left = 3, right = 3, top = 3, bottom = 3 },
+}
+
 local function EnsureInnerShadow(frame)
     if not frame or frame.xiusShadow then
         return
     end
     local shadow = {}
-    local specs = {
-        { "TOPLEFT", "TOPRIGHT", true, 4, -4 },
-        { "BOTTOMLEFT", "BOTTOMRIGHT", true, 4, 4 },
-        { "TOPLEFT", "BOTTOMLEFT", false, 4, -4 },
-        { "TOPRIGHT", "BOTTOMRIGHT", false, -4, -4 },
-    }
     for i = 1, 4 do
-        local spec = specs[i]
+        local spec = SHADOW_SPECS[i]
         local line = frame:CreateTexture(nil, "BORDER", nil, 1)
         line:SetColorTexture(0, 0, 0, 0.65)
         if spec[3] then
@@ -1100,24 +1686,26 @@ local function ApplyCardBackdrop(frame)
         return
     end
     EnsureInnerShadow(frame)
-    frame:SetBackdrop({
-        bgFile = "Interface\\Buttons\\WHITE8X8",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        edgeSize = 14,
-        insets = { left = 4, right = 4, top = 4, bottom = 4 },
-    })
+    frame:SetBackdrop(CARD_BACKDROP)
     frame:SetBackdropColor(0.06, 0.06, 0.08, 0.92)
     frame:SetBackdropBorderColor(1.0, 0.82, 0.35, 1.0)
 end
 
 function FBT:ApplyBarColors()
     local xr, xg, xb = SavedColor(self.db and self.db.xpColor, COLOR.xp)
+    local rsr, rsg, rsb = SavedColor(self.db and self.db.restedColor, COLOR.rest)
     local rr, rg, rb = SavedColor(self.db and self.db.repColor, COLOR.rep)
     if COLOR.xp[1] ~= xr or COLOR.xp[2] ~= xg or COLOR.xp[3] ~= xb then
         COLOR.xp[1], COLOR.xp[2], COLOR.xp[3] = xr, xg, xb
         if ui.xpBar and ui.xpBar.bar then
             ui.xpBar.bar._r = nil
         end
+    end
+    if COLOR.rest[1] ~= rsr or COLOR.rest[2] ~= rsg or COLOR.rest[3] ~= rsb then
+        COLOR.rest[1], COLOR.rest[2], COLOR.rest[3] = rsr, rsg, rsb
+    end
+    if ui.xpBar and ui.xpBar.rest then
+        ui.xpBar.rest:SetVertexColor(COLOR.rest[1], COLOR.rest[2], COLOR.rest[3], 0.45)
     end
     if COLOR.rep[1] ~= rr or COLOR.rep[2] ~= rg or COLOR.rep[3] ~= rb then
         COLOR.rep[1], COLOR.rep[2], COLOR.rep[3] = rr, rg, rb
@@ -1130,38 +1718,35 @@ function FBT:ApplyBarColors()
     end
 end
 
+local function PaintFrameChrome(frame, minimal)
+    if not frame or not frame.SetBackdrop then
+        return
+    end
+    if minimal then
+        frame:SetBackdrop(MINIMAL_BACKDROP)
+        frame:SetBackdropColor(0.07, 0.07, 0.08, 0.9)
+        frame:SetBackdropBorderColor(0.22, 0.22, 0.25, 1)
+    else
+        ApplyCardBackdrop(frame)
+    end
+end
+
+local function ShowFrameShadow(frame, shown)
+    local shadow = frame and frame.xiusShadow
+    if not shadow then
+        return
+    end
+    for i = 1, #shadow do
+        shadow[i]:SetShown(shown)
+    end
+end
+
 function FBT:ApplyChrome()
     local minimal = self.db and self.db.barStyle == "minimal"
-    local function Paint(frame)
-        if not frame or not frame.SetBackdrop then
-            return
-        end
-        if minimal then
-            frame:SetBackdrop({
-                bgFile = "Interface\\Buttons\\WHITE8X8",
-                edgeFile = "Interface\\Buttons\\WHITE8X8",
-                edgeSize = 1,
-                insets = { left = 1, right = 1, top = 1, bottom = 1 },
-            })
-            frame:SetBackdropColor(0.07, 0.07, 0.08, 0.9)
-            frame:SetBackdropBorderColor(0.22, 0.22, 0.25, 1)
-        else
-            ApplyCardBackdrop(frame)
-        end
-    end
-    local function ShowShadow(frame, shown)
-        local shadow = frame and frame.xiusShadow
-        if not shadow then
-            return
-        end
-        for i = 1, #shadow do
-            shadow[i]:SetShown(shown)
-        end
-    end
-    Paint(ui.card)
-    Paint(ui.panel)
-    ShowShadow(ui.card, not minimal)
-    ShowShadow(ui.panel, not minimal)
+    PaintFrameChrome(ui.card, minimal)
+    PaintFrameChrome(ui.panel, minimal)
+    ShowFrameShadow(ui.card, not minimal)
+    ShowFrameShadow(ui.panel, not minimal)
     self:ApplyBarColors()
     if ui.xpBar and ui.xpBar.LayoutTicks then
         ui.xpBar:LayoutTicks()
@@ -1179,12 +1764,7 @@ local function SetFont(fs, template, size, flags)
 end
 
 local function StyleMeterButton(btn, hover)
-    btn:SetBackdrop({
-        bgFile = "Interface\\Buttons\\WHITE8X8",
-        edgeFile = "Interface\\Buttons\\WHITE8X8",
-        edgeSize = 1,
-        insets = { left = 1, right = 1, top = 1, bottom = 1 },
-    })
+    btn:SetBackdrop(MINIMAL_BACKDROP)
     btn:SetBackdropColor(COLOR.btn[1], COLOR.btn[2], COLOR.btn[3], COLOR.btn[4])
     btn:SetBackdropBorderColor(COLOR.border[1], COLOR.border[2], COLOR.border[3], 0.7)
     btn:SetScript("OnEnter", function(self)
@@ -1211,12 +1791,7 @@ local function EnsurePrivateTooltip()
     tip:SetFrameStrata("TOOLTIP")
     tip:SetFrameLevel(150)
     tip:SetClampedToScreen(true)
-    tip:SetBackdrop({
-        bgFile = "Interface\\Buttons\\WHITE8X8",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        edgeSize = 12,
-        insets = { left = 3, right = 3, top = 3, bottom = 3 },
-    })
+    tip:SetBackdrop(TOOLTIP_BACKDROP)
     tip:SetBackdropColor(0.06, 0.06, 0.08, 0.96)
     tip:SetBackdropBorderColor(1.0, 0.82, 0.35, 1)
     tip:Hide()
@@ -1251,6 +1826,339 @@ function FBT:ShowTooltip(owner, titleText, bodyText)
     tip:ClearAllPoints()
     tip:SetPoint("BOTTOM", owner, "TOP", 0, 6)
     tip:Show()
+end
+
+local factionMenu
+local factionCatcher
+local factionSortList = {}
+
+local function CloseFactionPicker()
+    if factionCatcher then
+        factionCatcher:Hide()
+    end
+    if factionMenu then
+        factionMenu:Hide()
+    end
+end
+
+local function UpdateBadgeDisplay(isRepMode, info, level)
+    if not ui.badge or not ui.levelText then
+        return
+    end
+    if isRepMode and info then
+        local code = StandingCode(info)
+        local r, g, b = StandingColor(info.reaction)
+        local key = "rep:" .. code .. ":" .. math.floor(r * 100) .. ":" .. math.floor(g * 100) .. ":" .. math.floor(b * 100)
+        if ui.badgeKey ~= key then
+            ui.badgeKey = key
+            ui.badgeIsRep = true
+            SetFont(ui.levelText, GameFontNormal, 11, "OUTLINE")
+            ui.levelText:SetText(code)
+            ui.levelText:SetTextColor(r, g, b, 1)
+            if ui.badge.SetBackdropBorderColor then
+                ui.badge:SetBackdropBorderColor(r, g, b, 1)
+            end
+        end
+    else
+        local key = "lvl:" .. tostring(level or 0)
+        if ui.badgeKey ~= key then
+            ui.badgeKey = key
+            ui.badgeIsRep = false
+            SetFont(ui.levelText, GameFontNormalLarge, 16, "OUTLINE")
+            ui.levelText:SetText(tostring(level or 0))
+            ui.levelText:SetTextColor(1, 209 / 255, 0, 1)
+            if ui.badge.SetBackdropBorderColor then
+                ui.badge:SetBackdropBorderColor(212 / 255, 175 / 255, 55 / 255, 1)
+            end
+        end
+    end
+end
+
+local function ShowBadgeTooltip(owner)
+    if ui.barKind ~= "rep" then
+        return
+    end
+    local info = FBT:GetWatchedFaction()
+    if not info then
+        return
+    end
+    local cur, maxV = FactionBarValues(info)
+    local nextRem = RemainingToNextRank(info)
+    local maxRem, maxLabel = RemainingToMax(info)
+    local body = string.format(
+        "%s  (%s / %s · %s)\nRemaining to next tier: %s\nRemaining to %s: %s\nClick to switch tracked faction",
+        info.rankName or StandingName(info.reaction),
+        FormatNumber(cur),
+        FormatNumber(maxV),
+        FormatPercent(cur, maxV),
+        info.isMaxRank and "Max" or FormatNumber(nextRem),
+        maxLabel or "Exalted",
+        (info.isMaxRank or maxRem <= 0) and "Max" or FormatNumber(maxRem)
+    )
+    FBT:ShowTooltip(owner, info.name or "Reputation", body)
+end
+
+local function SortFactionsDesc(a, b)
+    if a.reaction ~= b.reaction then
+        return a.reaction > b.reaction
+    end
+    if a.currentStanding ~= b.currentStanding then
+        return a.currentStanding > b.currentStanding
+    end
+    return (a.name or "") < (b.name or "")
+end
+
+local function EnsureFactionPicker()
+    if factionMenu then
+        return factionMenu
+    end
+    local menu = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
+    menu:SetFrameStrata("TOOLTIP")
+    menu:SetToplevel(true)
+    menu:SetClampedToScreen(true)
+    menu:SetBackdrop(TOOLTIP_BACKDROP)
+    menu:SetBackdropColor(0.05, 0.05, 0.07, 0.98)
+    menu:SetBackdropBorderColor(1.0, 0.82, 0.35, 0.95)
+    menu:EnableMouse(true)
+    menu:EnableMouseWheel(true)
+    menu:Hide()
+
+    local scroll = CreateFrame("ScrollFrame", nil, menu)
+    scroll:SetPoint("TOPLEFT", menu, "TOPLEFT", 6, -6)
+    scroll:SetPoint("BOTTOMRIGHT", menu, "BOTTOMRIGHT", -6, 6)
+    local content = CreateFrame("Frame", nil, scroll)
+    content:SetSize(256, 20)
+    scroll:SetScrollChild(content)
+
+    menu.scroll = scroll
+    menu.content = content
+    menu.rows = {}
+    menu.scrollOffset = 0
+    menu.maxScroll = 0
+
+    menu:SetScript("OnMouseWheel", function(self, delta)
+        if self.maxScroll <= 0 then
+            return
+        end
+        local nextOffset = Clamp(self.scrollOffset - (delta * 22 * 2), 0, self.maxScroll)
+        self.scrollOffset = nextOffset
+        self.scroll:SetVerticalScroll(nextOffset)
+    end)
+
+    local catcher = CreateFrame("Button", nil, UIParent)
+    catcher:SetAllPoints(UIParent)
+    catcher:SetFrameStrata("TOOLTIP")
+    catcher:EnableMouse(true)
+    catcher:EnableMouseWheel(true)
+    catcher:RegisterForClicks("AnyUp")
+    catcher:SetScript("OnMouseDown", function()
+        if factionMenu and factionMenu:IsShown() and factionMenu:IsMouseOver() then
+            return
+        end
+        CloseFactionPicker()
+    end)
+    catcher:SetScript("OnMouseWheel", function()
+        CloseFactionPicker()
+    end)
+    catcher:Hide()
+
+    factionMenu = menu
+    factionCatcher = catcher
+    return menu
+end
+
+local function GetPickerRow(menu, idx)
+    local row = menu.rows[idx]
+    if row then
+        return row
+    end
+    row = CreateFrame("Button", nil, menu.content)
+    row:SetSize(252, 20)
+    local bg = row:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints()
+    bg:SetColorTexture(0.05, 0.05, 0.07, 0)
+    row.bg = bg
+
+    local tag = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    tag:SetPoint("LEFT", row, "LEFT", 4, 0)
+    tag:SetWidth(30)
+    tag:SetJustifyH("LEFT")
+    SetFont(tag, GameFontNormalSmall, 10, "OUTLINE")
+    row.tag = tag
+
+    local right = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    right:SetPoint("RIGHT", row, "RIGHT", -4, 0)
+    right:SetWidth(76)
+    right:SetJustifyH("RIGHT")
+    SetFont(right, GameFontHighlightSmall, 10)
+    row.right = right
+
+    local name = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    name:SetPoint("LEFT", tag, "RIGHT", 4, 0)
+    name:SetPoint("RIGHT", right, "LEFT", -4, 0)
+    name:SetJustifyH("LEFT")
+    name:SetWordWrap(false)
+    SetFont(name, GameFontHighlightSmall, 11)
+    row.name = name
+
+    row:SetScript("OnEnter", function(self)
+        self.bg:SetColorTexture(0.32, 0.24, 0.08, 0.9)
+    end)
+    row:SetScript("OnLeave", function(self)
+        self.bg:SetColorTexture(0.05, 0.05, 0.07, 0)
+    end)
+    -- Rows cover the menu, so wheel must forward from each row to the menu scroll.
+    row:EnableMouseWheel(true)
+    row:SetScript("OnMouseWheel", function(_, delta)
+        local handler = menu:GetScript("OnMouseWheel")
+        if handler then
+            handler(menu, delta)
+        end
+    end)
+
+    menu.rows[idx] = row
+    return row
+end
+
+local function ToggleFactionPicker(owner)
+    if not owner or ui.barKind ~= "rep" then
+        return
+    end
+    if factionMenu and factionMenu:IsShown() then
+        CloseFactionPicker()
+        return
+    end
+    FBT:HideTooltip()
+    local menu = EnsureFactionPicker()
+    local list, count = ScanActiveFactions()
+    for i = 1, count do
+        factionSortList[i] = list[i]
+    end
+    for i = count + 1, #factionSortList do
+        factionSortList[i] = nil
+    end
+    table.sort(factionSortList, SortFactionsDesc)
+
+    local db = FBT.db
+    local watched = FBT:GetWatchedFaction()
+    local watchedID = watched and watched.factionID or 0
+    local watchedName = watched and watched.name or ""
+    local autoMode = not db or db.repPickerMode ~= "MANUAL"
+
+    local totalRows = count + 1
+    local rowH = 22
+    local visibleRows = math.min(12, math.max(1, totalRows))
+    local menuW = 268
+    local menuH = (visibleRows * rowH) + 12
+    local contentH = totalRows * rowH
+
+    menu:SetSize(menuW, menuH)
+    menu.content:SetSize(menuW - 12, contentH)
+    menu.scrollOffset = 0
+    menu.maxScroll = math.max(0, contentH - (visibleRows * rowH))
+    menu.scroll:SetVerticalScroll(0)
+
+    -- Row 1: Auto (Highest Non-Exalted)
+    local autoRow = GetPickerRow(menu, 1)
+    autoRow:ClearAllPoints()
+    autoRow:SetPoint("TOPLEFT", menu.content, "TOPLEFT", 0, 0)
+    autoRow:SetWidth(menuW - 12)
+    autoRow.tag:SetText("AUTO")
+    autoRow.tag:SetTextColor(COLOR.gold[1], COLOR.gold[2], COLOR.gold[3], 1)
+    autoRow.name:SetText("Auto (Highest Non-Exalted)")
+    if autoMode then
+        autoRow.name:SetTextColor(COLOR.gold[1], COLOR.gold[2], COLOR.gold[3], 1)
+        autoRow.right:SetText("Active")
+        autoRow.right:SetTextColor(COLOR.gold[1], COLOR.gold[2], COLOR.gold[3], 1)
+    else
+        autoRow.name:SetTextColor(0.92, 0.92, 0.94, 1)
+        autoRow.right:SetText("")
+    end
+    autoRow:SetScript("OnClick", function()
+        if InCombatLockdown and InCombatLockdown() then
+            FBT:Print("Faction watch changes after combat.")
+            return
+        end
+        if FBT.db then
+            FBT.db.repPickerMode = "AUTO"
+        end
+        CloseFactionPicker()
+        local best = FindBestNonExaltedFaction()
+        if best then
+            SetWatchedFactionSafe(best.index, best.factionID)
+        end
+        watchedCache = nil
+        watchedCacheValid = false
+        CacheFactionBaseline(true)
+        FBT:Refresh()
+    end)
+    autoRow:Show()
+
+    for i = 1, count do
+        local entry = factionSortList[i]
+        local row = GetPickerRow(menu, i + 1)
+        row:ClearAllPoints()
+        row:SetPoint("TOPLEFT", menu.content, "TOPLEFT", 0, -i * rowH)
+        row:SetWidth(menuW - 12)
+
+        local r, g, b = StandingColor(entry.reaction)
+        local code = STANDING_CODES[Clamp(entry.reaction or 4, 1, 8)] or "NEU"
+        row.tag:SetText(code)
+        row.tag:SetTextColor(r, g, b, 1)
+
+        local isSelected = (not autoMode) and ((watchedID > 0 and entry.factionID == watchedID) or (entry.name == watchedName))
+        row.name:SetText(entry.name or "")
+        if isSelected then
+            row.name:SetTextColor(COLOR.gold[1], COLOR.gold[2], COLOR.gold[3], 1)
+        else
+            row.name:SetTextColor(0.92, 0.92, 0.94, 1)
+        end
+
+        if entry.isExalted then
+            row.right:SetText("Exalted")
+            row.right:SetTextColor(r, g, b, 1)
+        else
+            local cur = math.max(0, (entry.currentStanding or 0) - (entry.currentReactionThreshold or 0))
+            local maxV = math.max(1, (entry.nextReactionThreshold or 0) - (entry.currentReactionThreshold or 0))
+            row.right:SetText(FormatPercent(cur, maxV))
+            row.right:SetTextColor(0.76, 0.78, 0.84, 1)
+        end
+
+        local pickIndex = entry.index
+        local pickID = entry.factionID
+        row:SetScript("OnClick", function()
+            if InCombatLockdown and InCombatLockdown() then
+                FBT:Print("Faction watch changes after combat.")
+                return
+            end
+            if FBT.db then
+                FBT.db.repPickerMode = "MANUAL"
+            end
+            CloseFactionPicker()
+            SetWatchedFactionSafe(pickIndex, pickID)
+            watchedCache = nil
+            watchedCacheValid = false
+            CacheFactionBaseline(true)
+            FBT:Refresh()
+        end)
+        row:Show()
+    end
+
+    for i = totalRows + 1, #menu.rows do
+        menu.rows[i]:Hide()
+    end
+
+    menu:ClearAllPoints()
+    if ui.growUp then
+        menu:SetPoint("BOTTOMLEFT", owner, "TOPLEFT", 0, 6)
+    else
+        menu:SetPoint("TOPLEFT", owner, "BOTTOMLEFT", 0, -6)
+    end
+    local level = (owner:GetFrameLevel() or 80) + 60
+    factionCatcher:SetFrameLevel(math.max(1, level - 1))
+    menu:SetFrameLevel(level)
+    factionCatcher:Show()
+    menu:Show()
 end
 
 function FBT:HideTooltip()
@@ -1302,35 +2210,16 @@ local function MakeGearButton(parent, size, keepExpanded)
     return btn
 end
 
-local function CircleTex(parent, layer, size, r, g, b, a)
-    local t = parent:CreateTexture(nil, layer)
-    t:SetSize(size, size)
-    t:SetPoint("CENTER")
-    if t.SetMask then
-        t:SetColorTexture(r, g, b, a)
-        t:SetMask(PORTRAIT_MASK)
-    else
-        t:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
-        t:SetVertexColor(r, g, b, a)
-    end
-    return t
-end
-
 local function CreateThinBar(parent, height)
     local holder = CreateFrame("Frame", nil, parent, "BackdropTemplate")
     holder:SetHeight(height)
-    holder:SetBackdrop({
-        bgFile = "Interface\\Buttons\\WHITE8X8",
-        edgeFile = "Interface\\Buttons\\WHITE8X8",
-        edgeSize = 1,
-        insets = { left = 1, right = 1, top = 1, bottom = 1 },
-    })
+    holder:SetBackdrop(MINIMAL_BACKDROP)
     holder:SetBackdropColor(COLOR.trough[1], COLOR.trough[2], COLOR.trough[3], COLOR.trough[4] or 0.85)
     holder:SetBackdropBorderColor(COLOR.trim[1], COLOR.trim[2], COLOR.trim[3], 1)
 
     local rest = holder:CreateTexture(nil, "ARTWORK")
     rest:SetTexture("Interface\\TargetingFrame\\UI-StatusBar")
-    rest:SetVertexColor(0.62, 0.78, 1, 0.45)
+    rest:SetVertexColor(COLOR.rest[1], COLOR.rest[2], COLOR.rest[3], 0.45)
     rest:Hide()
 
     local bar = CreateFrame("StatusBar", nil, holder)
@@ -1591,19 +2480,24 @@ function FBT:UpdateFrameOrientation(resolvedDirection, reanchorCard)
         stats:ClearAllPoints()
         stats:SetHeight(STATS_EXTRA - 12)
     end
+    -- Keep the drawer seam flush with the collapsed card height (8 + HEADER_H + gap).
+    local drawerGap = CardCollapsedHeight() - 8 - HEADER_H
+    if drawerGap < 0 then
+        drawerGap = 0
+    end
     if ui.growUp then
         header:SetPoint("BOTTOMLEFT", card, "BOTTOMLEFT", 10, 8)
         header:SetPoint("BOTTOMRIGHT", card, "BOTTOMRIGHT", -10, 8)
         if statsOnCard then
-            stats:SetPoint("BOTTOMLEFT", header, "TOPLEFT", 0, 10)
-            stats:SetPoint("BOTTOMRIGHT", header, "TOPRIGHT", 0, 10)
+            stats:SetPoint("BOTTOMLEFT", header, "TOPLEFT", 0, drawerGap)
+            stats:SetPoint("BOTTOMRIGHT", header, "TOPRIGHT", 0, drawerGap)
         end
     else
         header:SetPoint("TOPLEFT", card, "TOPLEFT", 10, -8)
         header:SetPoint("TOPRIGHT", card, "TOPRIGHT", -10, -8)
         if statsOnCard then
-            stats:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -10)
-            stats:SetPoint("TOPRIGHT", header, "BOTTOMRIGHT", 0, -10)
+            stats:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -drawerGap)
+            stats:SetPoint("TOPRIGHT", header, "BOTTOMRIGHT", 0, -drawerGap)
         end
     end
 
@@ -1689,7 +2583,8 @@ function FBT:NudgePanelClearOfOptions()
     if not IsSeparateStatsMode() or not ui.panel or not ui.panel:IsShown() or not self.db or self.db.panelLocked then
         return
     end
-    local window = _G.XiusUISettingsLibFrame
+    -- XiusCore settings frame (legacy global name still used by XiusUISettingsLib).
+    local window = _G.XiusCoreSettingsLibFrame or _G.XiusUISettingsLibFrame
     if not (window and window.IsShown and window:IsShown()) then
         window = _G.XiusUIOptionsFrame
     end
@@ -1788,6 +2683,7 @@ local function CollectStatWidgets()
     ui.allStats = {
         ui.statSessionXP, ui.statSessionTime,
         ui.statRested, ui.statTTL,
+        ui.statOverallTTL,
         ui.statXPHour, ui.statKTL,
         ui.statQTL, ui.statRepSess,
         ui.statGoldHour, ui.statGoldSess,
@@ -1805,25 +2701,32 @@ function LayoutStatsGrid()
     end
     local availWidth = math.max(1, host:GetWidth() - (LEFT_MARGIN + RIGHT_MARGIN))
     local compact = (ui.panel and host == ui.panel) or IsSeparateStatsMode()
-    local layoutKey = availWidth + (compact and 100000 or 0)
+    local repMode = ui.repModeGrid and true or false
+    local stats = CollectStatWidgets()
+    local visibleBits = 0
+    for i = 1, #stats do
+        if stats[i] and stats[i]._shown ~= false then
+            visibleBits = visibleBits + (2 ^ (i - 1))
+        end
+    end
+    local layoutKey = availWidth + (compact and 100000 or 0) + (repMode and 200000 or 0) + visibleBits
     if ui.gridLayoutWidth and math.abs(ui.gridLayoutWidth - layoutKey) < 0.25 then
         return
     end
     ui.gridLayoutWidth = layoutKey
 
     if compact then
-        local stats = CollectStatWidgets()
         local visibleCount = 0
         for i = 1, #stats do
             if stats[i] and stats[i]._shown ~= false then
                 visibleCount = visibleCount + 1
             end
         end
-        local colCount = PANEL_COLUMNS
-        local perCol = math.max(1, math.ceil(visibleCount / colCount))
+        -- Pack left-to-right with only as many columns as visible stats need.
+        local colCount = math.max(1, math.min(PANEL_COLUMNS, math.max(1, visibleCount)))
         local colWidth = availWidth / colCount
-        local textWidth = math.max(8, colWidth - 6)
-        local rowHeight = 34
+        local textWidth = math.max(8, colWidth - 4)
+        local rowHeight = 30
         for i = 1, #cols do
             if cols[i] then
                 cols[i]:Hide()
@@ -1839,9 +2742,9 @@ function LayoutStatsGrid()
                 stat.label:SetWidth(textWidth)
                 stat.value:SetWidth(textWidth)
                 if stat._shown ~= false then
-                    local col = math.floor(visIdx / perCol)
-                    local row = visIdx % perCol
-                    local x = (LEFT_MARGIN - PAD) + (col * colWidth)
+                    local col = visIdx % colCount
+                    local row = math.floor(visIdx / colCount)
+                    local x = col * colWidth
                     local y = -row * rowHeight
                     stat:SetPoint("TOPLEFT", grid, "TOPLEFT", x, y)
                     visIdx = visIdx + 1
@@ -1853,41 +2756,98 @@ function LayoutStatsGrid()
         return
     end
 
-    local colWidth = availWidth / NUM_COLUMNS
-    local textWidth = math.max(8, colWidth - 8)
-    for i = 0, NUM_COLUMNS - 1 do
-        local col = cols[i + 1]
+    local activeCols
+    if repMode then
+        activeCols = 5
+        cols[1].statTop, cols[1].statBottom = ui.statRepSess, ui.statRepHour
+        cols[2].statTop, cols[2].statBottom = ui.statSessionXP, ui.statXPHour
+        cols[3].statTop, cols[3].statBottom = ui.statQTL, ui.statNextRank
+        cols[4].statTop, cols[4].statBottom = ui.statGoldSess, ui.statGoldHour
+        cols[5].statTop, cols[5].statBottom = ui.statSessionTime, ui.statTimePlayed
+        cols[6].statTop, cols[6].statBottom = nil, nil
+        cols[7].statTop, cols[7].statBottom = nil, nil
+        cols[8].statTop, cols[8].statBottom = nil, nil
+    else
+        cols[1].statTop, cols[1].statBottom = ui.statSessionXP, ui.statSessionTime
+        cols[2].statTop, cols[2].statBottom = ui.statRested, ui.statTTL
+        cols[3].statTop, cols[3].statBottom = ui.statXPHour, ui.statKTL
+        cols[4].statTop, cols[4].statBottom = ui.statQTL, ui.statRepSess
+        cols[5].statTop, cols[5].statBottom = ui.statGoldHour, ui.statGoldSess
+        cols[6].statTop, cols[6].statBottom = ui.statRepHour, ui.statNextRank
+        cols[7].statTop, cols[7].statBottom = ui.statTimeLevel, ui.statTimePlayed
+        cols[8].statTop, cols[8].statBottom = ui.statOverallTTL, nil
+        activeCols = NUM_COLUMNS
+        if cols[8] and cols[8].statTop and cols[8].statTop._shown == false and not cols[8].statBottom then
+            activeCols = NUM_COLUMNS - 1
+        end
+    end
+    -- Pack only columns that still have at least one visible stat so toggling
+    -- options never leaves empty gaps across the drawer.
+    local packed = {}
+    for i = 1, activeCols do
+        local col = cols[i]
         if col then
-            col:Show()
-            local x = (LEFT_MARGIN - PAD) + (i * colWidth)
-            col:ClearAllPoints()
-            col:SetPoint("TOPLEFT", grid, "TOPLEFT", x, 0)
-            col:SetPoint("BOTTOM", grid, "BOTTOM", 0, 0)
-            col:SetWidth(textWidth)
             local topStat = col.statTop
             local bottomStat = col.statBottom
-            if topStat then
-                topStat:SetParent(col)
-                topStat:ClearAllPoints()
-                topStat:SetPoint("TOPLEFT", col, "TOPLEFT", 0, 0)
-                topStat:SetPoint("RIGHT", col, "RIGHT", 0, 0)
-                topStat:SetWidth(textWidth)
-                topStat.label:SetWidth(textWidth)
-                topStat.value:SetWidth(textWidth)
+            local topShown = topStat and topStat._shown ~= false
+            local bottomShown = bottomStat and bottomStat._shown ~= false
+            if topShown or bottomShown then
+                packed[#packed + 1] = col
+            else
+                col:Hide()
             end
-            if bottomStat then
-                bottomStat:SetParent(col)
-                bottomStat:ClearAllPoints()
-                if topStat and topStat._shown ~= false then
-                    bottomStat:SetPoint("TOPLEFT", topStat, "BOTTOMLEFT", 0, -6)
-                else
-                    bottomStat:SetPoint("TOPLEFT", col, "TOPLEFT", 0, 0)
-                end
-                bottomStat:SetPoint("RIGHT", col, "RIGHT", 0, 0)
-                bottomStat:SetWidth(textWidth)
-                bottomStat.label:SetWidth(textWidth)
-                bottomStat.value:SetWidth(textWidth)
+        end
+    end
+    for i = activeCols + 1, NUM_COLUMNS do
+        if cols[i] then
+            cols[i]:Hide()
+        end
+    end
+    local packedCount = math.max(1, #packed)
+    local colWidth = availWidth / packedCount
+    local textWidth = math.max(8, colWidth - 8)
+    for i = 1, #packed do
+        local col = packed[i]
+        col:Show()
+        local x = (LEFT_MARGIN - PAD) + ((i - 1) * colWidth)
+        local topStat = col.statTop
+        local bottomStat = col.statBottom
+        local topShown = topStat and topStat._shown ~= false
+        local bottomShown = bottomStat and bottomStat._shown ~= false
+        local colH = 0
+        if topShown then
+            colH = colH + (topStat:GetHeight() or 30)
+        end
+        if bottomShown then
+            if colH > 0 then
+                colH = colH + 6
             end
+            colH = colH + (bottomStat:GetHeight() or 30)
+        end
+        col:ClearAllPoints()
+        col:SetPoint("TOPLEFT", grid, "TOPLEFT", x, 0)
+        col:SetSize(textWidth, math.max(1, colH))
+        if topStat then
+            topStat:SetParent(col)
+            topStat:ClearAllPoints()
+            topStat:SetPoint("TOPLEFT", col, "TOPLEFT", 0, 0)
+            topStat:SetPoint("RIGHT", col, "RIGHT", 0, 0)
+            topStat:SetWidth(textWidth)
+            topStat.label:SetWidth(textWidth)
+            topStat.value:SetWidth(textWidth)
+        end
+        if bottomStat then
+            bottomStat:SetParent(col)
+            bottomStat:ClearAllPoints()
+            if topShown then
+                bottomStat:SetPoint("TOPLEFT", topStat, "BOTTOMLEFT", 0, -6)
+            else
+                bottomStat:SetPoint("TOPLEFT", col, "TOPLEFT", 0, 0)
+            end
+            bottomStat:SetPoint("RIGHT", col, "RIGHT", 0, 0)
+            bottomStat:SetWidth(textWidth)
+            bottomStat.label:SetWidth(textWidth)
+            bottomStat.value:SetWidth(textWidth)
         end
     end
 end
@@ -1902,6 +2862,9 @@ local function SetStatsInteractive(enabled)
     end
     if ui.settingsBtn then
         ui.settingsBtn:EnableMouse(enabled)
+    end
+    if ui.statOverallTTL then
+        ui.statOverallTTL:EnableMouse(enabled)
     end
 end
 
@@ -2074,7 +3037,7 @@ function FBT:ScheduleCollapse()
     end)
 end
 
-local function FactionBarValues(info)
+FactionBarValues = function(info)
     local cur = (info.currentStanding or 0) - (info.currentReactionThreshold or 0)
     local maxV = (info.nextReactionThreshold or 0) - (info.currentReactionThreshold or 0)
     if maxV <= 0 then
@@ -2147,14 +3110,14 @@ function FBT:RefreshHeader()
     end
     local db = self.db
     local level = PublicNumber(UnitLevel("player"), 0)
-    if ui.levelShown ~= level then
-        ui.levelShown = level
-        ui.levelText:SetText(tostring(level))
-    end
-
     local atMax = IsPlayerMaxLevel()
-    local info = self:GetWatchedFaction()
-    local showRep = db.showRepBar and info ~= nil
+    local info
+    if atMax or (not db.showXPBar and db.showRepBar) then
+        info = self:EnsureMaxLevelReputation(false)
+    else
+        info = self:GetWatchedFaction()
+    end
+    local showRep = (atMax or db.showRepBar) and info ~= nil
     local showXP = db.showXPBar and (not atMax or not showRep)
 
     if showXP then
@@ -2214,6 +3177,8 @@ function FBT:RefreshHeader()
         HideRest(ui.xpBar)
     end
 
+    UpdateBadgeDisplay(ui.barKind == "rep", info, level)
+
     if showRep and info and showXP then
         local cur, maxV = FactionBarValues(info)
         if ui.repCur ~= cur or ui.repMax ~= maxV then
@@ -2224,6 +3189,15 @@ function FBT:RefreshHeader()
         LayoutHeaderBars("dual")
     else
         LayoutHeaderBars("single")
+    end
+
+    local wantRepGrid = atMax and ui.barKind == "rep"
+    if ui.repModeGrid ~= wantRepGrid then
+        ui.repModeGrid = wantRepGrid
+        ui.gridLayoutWidth = nil
+        if IsSeparateStatsMode() or ShouldShowEmbeddedStats() then
+            self:RefreshStats()
+        end
     end
 end
 
@@ -2247,55 +3221,165 @@ function FBT:RefreshStats()
         maxXP = 1
     end
     local xpLeft = math.max(0, maxXP - currentXP)
-    local ttl = TimeFromRate(xpLeft, xpPerHour)
-    local avgKill = AverageKillXP()
-    local avgQuest = AverageQuestXP()
     local atMax = IsPlayerMaxLevel()
-    local ktl = "--"
-    if not atMax and avgKill > 0 and xpLeft > 0 then
-        ktl = tostring(math.ceil(xpLeft / avgKill))
-    elseif atMax then
-        ktl = "Max"
+    local repModeGrid = atMax and ui.barKind == "rep"
+    if ui.repModeGrid ~= repModeGrid then
+        ui.repModeGrid = repModeGrid
+        ui.statsVisibilityDirty = true
     end
-    local qtl = "--"
-    if not atMax and avgQuest > 0 and xpLeft > 0 then
-        qtl = tostring(math.ceil(xpLeft / avgQuest))
-    elseif atMax then
-        qtl = "Max"
+
+    if repModeGrid then
+        -- Hide dead max-level XP cells and repurpose the 5 wide columns for active Reputation & Session stats.
+        SetStat(ui.statRested, "RESTED", "--", false, COLOR.rest)
+        SetStat(ui.statTTL, "TIME TO LEVEL", "--", false, COLOR.gold)
+        SetStat(ui.statOverallTTL, "OVERALL TTL", "--", false, COLOR.gold)
+        SetStat(ui.statKTL, "KILLS TO LEVEL", "--", false, COLOR.value)
+        SetStat(ui.statTimeLevel, "TIME THIS LEVEL", "--", false, COLOR.value)
+
+        local goldColor = goldPerHour < 0 and COLOR.bad or COLOR.gold
+        local sessGoldColor = goldDelta < 0 and COLOR.bad or COLOR.gold
+        if db.showGoldHour then
+            local goldHourRound = Round(goldPerHour)
+            if ui.cachedGoldHourVal ~= goldHourRound then
+                ui.cachedGoldHourVal = goldHourRound
+                ui.cachedGoldHourText = FormatGoldValue(goldHourRound)
+            end
+        end
+        if db.showGoldSession then
+            if ui.cachedGoldDeltaVal ~= goldDelta then
+                ui.cachedGoldDeltaVal = goldDelta
+                ui.cachedGoldDeltaText = FormatGoldValue(goldDelta)
+            end
+        end
+        SetStat(ui.statGoldSess, "SESSION GOLD", ui.cachedGoldDeltaText or "--", db.showGoldSession, sessGoldColor)
+        SetStat(ui.statGoldHour, "GOLD / HOUR", ui.cachedGoldHourText or "--", db.showGoldHour, goldColor)
+        local showInst = db.showInstanceTime ~= false and session.inInstance and session.instanceStartTime
+        if showInst and not db.showSessionTime then
+            SetStat(ui.statSessionTime, "INSTANCE TIME", FormatClock(InstanceElapsed()), true, COLOR.value)
+            SetStat(ui.statTimePlayed, "TOTAL PLAYED", db.showTimePlayed and FormatPlayedClock(PlayedSinceSnapshot(session.playedTotal)) or "--", db.showTimePlayed, COLOR.gold)
+        elseif showInst then
+            -- Keep session visible; instance run uses the time-played slot while inside.
+            SetStat(ui.statSessionTime, "SESSION TIME", FormatClock(elapsed), true, COLOR.value)
+            SetStat(ui.statTimePlayed, "INSTANCE TIME", FormatClock(InstanceElapsed()), true, COLOR.gold)
+        else
+            SetStat(ui.statSessionTime, "SESSION TIME", db.showSessionTime and FormatClock(elapsed) or "--", db.showSessionTime, COLOR.value)
+            SetStat(ui.statTimePlayed, "TOTAL PLAYED", db.showTimePlayed and FormatPlayedClock(PlayedSinceSnapshot(session.playedTotal)) or "--", db.showTimePlayed, COLOR.gold)
+        end
+
+        local info = self:GetWatchedFaction()
+        if info then
+            local sessionRep = RepTrackValue(info) - (session.startingRep or 0)
+            local repPerHour = RatePerHour(sessionRep, elapsed)
+            local nextRemain = RemainingToNextRank(info)
+            local maxRemain, maxLabel = RemainingToMax(info)
+            local maxName = string.upper(maxLabel or "EXALTED")
+
+            local repToNextText = (info.isMaxRank or nextRemain <= 0) and "Max" or FormatNumber(nextRemain)
+            local timeToNextText = (info.isMaxRank or nextRemain <= 0) and "Max" or FormatClock(TimeFromRate(nextRemain, repPerHour))
+            local repToMaxText = (info.isMaxRank or maxRemain <= 0) and "Max" or FormatNumber(maxRemain)
+            local timeToMaxText = (info.isMaxRank or maxRemain <= 0) and "Max" or FormatClock(TimeFromRate(maxRemain, repPerHour))
+
+            SetStat(ui.statRepSess, "SESSION REP", sessionRep ~= 0 and FormatNumber(sessionRep) or "--", db.showRepSession, COLOR.rep)
+            SetStat(ui.statRepHour, "REP / HOUR", sessionRep > 0 and FormatCompact(repPerHour) or "--", db.showRepHour, COLOR.rep)
+            SetStat(ui.statSessionXP, "REP TO NEXT", repToNextText, db.showRepNextRank, COLOR.value)
+            SetStat(ui.statXPHour, "TIME TO NEXT", timeToNextText, db.showRepNextRank, COLOR.gold)
+            SetStat(ui.statQTL, "REP TO " .. maxName, repToMaxText, db.showRepExalted, COLOR.value)
+            SetStat(ui.statNextRank, "TIME TO " .. maxName, timeToMaxText, db.showRepExalted, COLOR.gold)
+        else
+            SetStat(ui.statRepSess, "SESSION REP", "--", db.showRepSession, COLOR.rep)
+            SetStat(ui.statRepHour, "REP / HOUR", "--", db.showRepHour, COLOR.rep)
+            SetStat(ui.statSessionXP, "REP TO NEXT", "--", db.showRepNextRank, COLOR.value)
+            SetStat(ui.statXPHour, "TIME TO NEXT", "--", db.showRepNextRank, COLOR.gold)
+            SetStat(ui.statQTL, "REP TO EXALTED", "--", db.showRepExalted, COLOR.value)
+            SetStat(ui.statNextRank, "TIME TO EXALTED", "--", db.showRepExalted, COLOR.gold)
+        end
+
+        if ui.statsVisibilityDirty then
+            ui.statsVisibilityDirty = false
+            ui.gridLayoutWidth = nil
+            LayoutStatsGrid()
+        end
+        return
     end
-    local restXP = CurrentRestXP()
-    local restText = "0 (0%)"
-    if restXP > 0 and maxXP > 0 then
-        restText = string.format("%s (%s)", FormatCompact(restXP), FormatPercent(restXP, maxXP))
-    end
+
     local sessionXPText = string.format("%s / %s", FormatCompact(session.xpEarned or 0), FormatCompact(xpLeft))
 
-    local levelPlayed = PlayedSinceSnapshot(session.playedLevel)
-    local totalPlayed = PlayedSinceSnapshot(session.playedTotal)
-
     SetStat(ui.statSessionXP, "SESSION XP", sessionXPText, true, COLOR.value)
-    SetStat(ui.statSessionTime, "SESSION TIME", FormatClock(elapsed), db.showSessionTime, COLOR.value)
-    SetStat(ui.statTimeLevel, "TIME THIS LEVEL", FormatPlayedClock(levelPlayed), db.showTimeLevel, COLOR.value)
-    SetStat(ui.statTimePlayed, "TOTAL PLAYED", FormatPlayedClock(totalPlayed), db.showTimePlayed, COLOR.gold)
+    local showInst = db.showInstanceTime ~= false and session.inInstance and session.instanceStartTime
+    if showInst and not db.showSessionTime then
+        SetStat(ui.statSessionTime, "INSTANCE TIME", FormatClock(InstanceElapsed()), true, COLOR.value)
+    else
+        SetStat(ui.statSessionTime, "SESSION TIME", db.showSessionTime and FormatClock(elapsed) or "--", db.showSessionTime, COLOR.value)
+    end
+    SetStat(ui.statTimeLevel, "TIME THIS LEVEL", db.showTimeLevel and FormatPlayedClock(PlayedSinceSnapshot(session.playedLevel)) or "--", db.showTimeLevel, COLOR.value)
+    if showInst and db.showSessionTime then
+        SetStat(ui.statTimePlayed, "INSTANCE TIME", FormatClock(InstanceElapsed()), true, COLOR.gold)
+    else
+        SetStat(ui.statTimePlayed, "TOTAL PLAYED", db.showTimePlayed and FormatPlayedClock(PlayedSinceSnapshot(session.playedTotal)) or "--", db.showTimePlayed, COLOR.gold)
+    end
+
+    local restText = "0 (0%)"
+    if db.showRested and not atMax then
+        local restXP = CurrentRestXP()
+        if restXP > 0 and maxXP > 0 then
+            restText = string.format("%s (%s)", FormatCompact(restXP), FormatPercent(restXP, maxXP))
+        end
+    end
     SetStat(ui.statRested, "RESTED", atMax and "Max" or restText, db.showRested, COLOR.rest)
-    SetStat(ui.statTTL, "TIME TO LEVEL", atMax and "Max" or FormatClock(ttl), db.showTTL, COLOR.gold)
-    SetStat(ui.statXPHour, "XP / HOUR", atMax and "--" or FormatCompact(xpPerHour), db.showXPHour, COLOR.value)
+    SetStat(ui.statTTL, "TIME TO LEVEL", atMax and "Max" or (db.showTTL and FormatClock(TimeFromRate(xpLeft, xpPerHour)) or "--"), db.showTTL, COLOR.gold)
+
+    if db.showOverallTTL then
+        local overallTTL, careerRate, blendedRate, careerLevels = ComputeOverallTTL(xpLeft, xpPerHour, elapsed)
+        ui.careerPaceRate = careerRate
+        ui.careerBlendedRate = blendedRate
+        ui.careerSessionRate = xpPerHour
+        ui.careerLevelsCount = careerLevels
+        SetStat(ui.statOverallTTL, "OVERALL TTL", atMax and "Max" or FormatClock(overallTTL), true, COLOR.gold)
+    else
+        SetStat(ui.statOverallTTL, "OVERALL TTL", "--", false, COLOR.gold)
+    end
+
+    SetStat(ui.statXPHour, "XP / HOUR", (atMax or not db.showXPHour) and "--" or FormatCompact(xpPerHour), db.showXPHour, COLOR.value)
+
+    local ktl = "--"
+    if db.showKTL then
+        local avgKill = AverageKillXP()
+        if not atMax and avgKill > 0 and xpLeft > 0 then
+            ktl = tostring(math.ceil(xpLeft / avgKill))
+        elseif atMax then
+            ktl = "Max"
+        end
+    end
     SetStat(ui.statKTL, "KILLS TO LEVEL", ktl, db.showKTL, COLOR.value)
+
+    local qtl = "--"
+    if db.showQTL then
+        local avgQuest = AverageQuestXP()
+        if not atMax and avgQuest > 0 and xpLeft > 0 then
+            qtl = tostring(math.ceil(xpLeft / avgQuest))
+        elseif atMax then
+            qtl = "Max"
+        end
+    end
     SetStat(ui.statQTL, "QUESTS TO LEVEL", qtl, db.showQTL, COLOR.gold)
 
     local goldColor = goldPerHour < 0 and COLOR.bad or COLOR.gold
     local sessGoldColor = goldDelta < 0 and COLOR.bad or COLOR.gold
-    local goldHourRound = Round(goldPerHour)
-    if ui.cachedGoldHourVal ~= goldHourRound then
-        ui.cachedGoldHourVal = goldHourRound
-        ui.cachedGoldHourText = FormatGoldValue(goldHourRound)
+    if db.showGoldHour then
+        local goldHourRound = Round(goldPerHour)
+        if ui.cachedGoldHourVal ~= goldHourRound then
+            ui.cachedGoldHourVal = goldHourRound
+            ui.cachedGoldHourText = FormatGoldValue(goldHourRound)
+        end
     end
-    if ui.cachedGoldDeltaVal ~= goldDelta then
-        ui.cachedGoldDeltaVal = goldDelta
-        ui.cachedGoldDeltaText = FormatGoldValue(goldDelta)
+    if db.showGoldSession then
+        if ui.cachedGoldDeltaVal ~= goldDelta then
+            ui.cachedGoldDeltaVal = goldDelta
+            ui.cachedGoldDeltaText = FormatGoldValue(goldDelta)
+        end
     end
-    SetStat(ui.statGoldHour, "GOLD / HOUR", ui.cachedGoldHourText or FormatGoldValue(goldPerHour), db.showGoldHour, goldColor)
-    SetStat(ui.statGoldSess, "SESSION GOLD", ui.cachedGoldDeltaText or FormatGoldValue(goldDelta), db.showGoldSession, sessGoldColor)
+    SetStat(ui.statGoldHour, "GOLD / HOUR", ui.cachedGoldHourText or "--", db.showGoldHour, goldColor)
+    SetStat(ui.statGoldSess, "SESSION GOLD", ui.cachedGoldDeltaText or "--", db.showGoldSession, sessGoldColor)
 
     local info = self:GetWatchedFaction()
     if info then
@@ -2335,14 +3419,6 @@ function FBT:RefreshStats()
         ui.statsVisibilityDirty = false
         ui.gridLayoutWidth = nil
         LayoutStatsGrid()
-    end
-
-    local hint = "Shift + Left-drag to move"
-    if ui.footer then
-        SetCachedText(ui.footer, "footerHint", hint)
-    end
-    if ui.panelMoveHint then
-        SetCachedText(ui.panelMoveHint, "panelMoveHintCache", hint)
     end
 end
 
@@ -2423,18 +3499,9 @@ function FBT:ApplyStatsDisplayMode()
         if ui.panelGrip then
             ui.panelGrip:SetShown(not self.db.panelLocked)
         end
-        if ui.footer then
-            ui.footer:Hide()
-        end
-        if ui.panelMoveHint then
-            ui.panelMoveHint:Show()
-        end
     else
         if ui.panel then
             ui.panel:Hide()
-        end
-        if ui.footer then
-            ui.footer:Show()
         end
         ReparentStatsTo(ui.card, ui.card)
         self:UpdateFrameOrientation(self:ResolveGrowthDirection(false), false)
@@ -2453,7 +3520,6 @@ function FBT:ApplyStatsDisplayMode()
             ui.card:SetHeight(CardCollapsedHeight())
         end
     end
-    ui.footerHint = nil
     self:RefreshStats()
     if ui.moversUnlocked and self.ShowMoverChrome then
         self:ShowMoverChrome()
@@ -2461,6 +3527,9 @@ function FBT:ApplyStatsDisplayMode()
 end
 
 function FBT:ApplySettings(key)
+    if self.SyncProfileDB then
+        self:SyncProfileDB()
+    end
     if not ui.card or not self.db then
         return
     end
@@ -2468,12 +3537,15 @@ function FBT:ApplySettings(key)
         self:ApplyVisibility()
         return
     end
-    if key == nil or key == "barStyle" or key == "xpColor" or key == "repColor" then
+    if key == nil or key == "barStyle" or key == "xpColor" or key == "restedColor" or key == "repColor" then
         ui.barKind = nil
         self:ApplyChrome()
     end
     if key == nil or key == "cardHeight" then
         self:ApplyCardHeight()
+    end
+    if key == nil or key == "scale" then
+        self:ApplyScale()
     end
     if key == "autoTrackRep" then
         factionScanReady = false
@@ -2502,9 +3574,6 @@ function FBT:ApplySettings(key)
             self:SetExpanded(false)
         end
     end
-    if key == "expandTrigger" or key == "statsDisplayMode" then
-        ui.footerHint = nil
-    end
     if key == "showXPBar" or key == "showRepBar" then
         ui.headerBarMode = nil
         ui.barKind = nil
@@ -2522,22 +3591,31 @@ function FBT:ToggleLock()
     if not db then
         return
     end
+    local Lib = _G.XiusCoreSettingsLib
     if IsSeparateStatsMode() then
         db.panelLocked = not db.panelLocked
         self:ApplySettings("panelLocked")
         if db.panelLocked then
+            self:SetFrameMovers(false)
+            if Lib and Lib.NoteFramesLocked then
+                Lib:NoteFramesLocked()
+            end
             self:Print("Stats box locked.")
         else
-            self:Print("Stats box unlocked. Shift-drag to move.")
+            self:Print("Stats box unlocked.")
         end
         return
     end
     db.isLocked = not db.isLocked
     self:ApplySettings("isLocked")
     if db.isLocked then
+        self:SetFrameMovers(false)
+        if Lib and Lib.NoteFramesLocked then
+            Lib:NoteFramesLocked()
+        end
         self:Print("Card locked.")
     else
-        self:Print("Card unlocked. Shift-drag to move.")
+        self:Print("Card unlocked.")
     end
 end
 
@@ -2546,6 +3624,8 @@ function FBT:ResetSession()
     session.xpEarned = 0
     session.killXP = {}
     session.questXP = {}
+    session.avgKillXP = 0
+    session.avgQuestXP = 0
     session.awaitNewLevelXP = nil
     session.moneyReady = false
     session.startMoney = 0
@@ -2577,6 +3657,8 @@ function FBT:StartSession()
     session.xpEarned = 0
     session.killXP = {}
     session.questXP = {}
+    session.avgKillXP = 0
+    session.avgQuestXP = 0
     session.awaitNewLevelXP = nil
     session.moneyReady = false
     session.startMoney = 0
@@ -2592,6 +3674,7 @@ function FBT:StartSession()
     if C_Timer and C_Timer.NewTicker then
         local sweep = 0
         ticker = C_Timer.NewTicker(1.0, function()
+            TickCareerActiveTime()
             local cardShown = ui.card and ui.card:IsShown()
             if not ui.card or ValueHidden(cardShown) or not cardShown then
                 return
@@ -2661,7 +3744,7 @@ local function OnCardMouseDown(_, button)
     if ui.grip and ui.grip:IsShown() and FrameIsMouseOver(ui.grip) then
         return
     end
-    if (ui.moversUnlocked or (not db.isLocked and IsShiftKeyDown())) and not (InCombatLockdown and InCombatLockdown()) then
+    if ui.moversUnlocked and not (InCombatLockdown and InCombatLockdown()) then
         ui.moving = true
         ui.card:StartMoving()
         EnsureAnim()
@@ -2709,7 +3792,7 @@ local function OnPanelMouseDown(_, button)
     if ui.panelGrip and ui.panelGrip:IsShown() and FrameIsMouseOver(ui.panelGrip) then
         return
     end
-    if (ui.moversUnlocked or (not db.panelLocked and IsShiftKeyDown())) and not (InCombatLockdown and InCombatLockdown()) then
+    if ui.moversUnlocked and not (InCombatLockdown and InCombatLockdown()) then
         ui.panelMoving = true
         ui.panel:StartMoving()
         ui.panel:SetScript("OnUpdate", PanelOnUpdate)
@@ -2770,7 +3853,7 @@ local function BuildStatsContent(parent)
 
     local grid = CreateFrame("Frame", nil, stats)
     grid:SetPoint("TOPLEFT", resetBtn, "BOTTOMLEFT", 0, -8)
-    grid:SetPoint("BOTTOMRIGHT", stats, "BOTTOMRIGHT", 0, 16)
+    grid:SetPoint("BOTTOMRIGHT", stats, "BOTTOMRIGHT", 0, 4)
 
     local cols = {}
     for i = 1, NUM_COLUMNS do
@@ -2824,11 +3907,39 @@ local function BuildStatsContent(parent)
     local statTimePlayed = MakeStat(cols[7])
     PlacePair(cols[7], statTimeLevel, statTimePlayed)
 
-    local footer = stats:CreateFontString(nil, "OVERLAY")
-    footer:SetPoint("BOTTOM", stats, "BOTTOM", 0, 0)
-    SetFont(footer, GameFontDisableSmall, 9)
-    footer:SetTextColor(COLOR.footer[1], COLOR.footer[2], COLOR.footer[3], 1)
-    footer:SetText("Shift + Left-drag to move")
+    local statOverallTTL = MakeStat(cols[8])
+    statOverallTTL:SetParent(cols[8])
+    statOverallTTL:ClearAllPoints()
+    statOverallTTL:SetPoint("TOPLEFT", cols[8], "TOPLEFT", 0, 0)
+    statOverallTTL:SetPoint("RIGHT", cols[8], "RIGHT", 0, 0)
+    cols[8].statTop = statOverallTTL
+    cols[8].statBottom = nil
+    statOverallTTL:EnableMouse(false)
+    statOverallTTL:SetScript("OnEnter", function(self)
+        if OnCardEnter then
+            OnCardEnter()
+        end
+        if not ui.statsInteractive then
+            return
+        end
+        local careerStr = (ui.careerPaceRate or 0) > 0 and (FormatCompact(ui.careerPaceRate) .. "/hr") or "--"
+        local sessionStr = (ui.careerSessionRate or 0) > 0 and (FormatCompact(ui.careerSessionRate) .. "/hr") or "--"
+        local blendStr = (ui.careerBlendedRate or 0) > 0 and (FormatCompact(ui.careerBlendedRate) .. "/hr") or "--"
+        local body = string.format(
+            "XP-weighted career pace blended with current session.\nCareer Pace: %s (%d lvl)\nSession Rate: %s\nBlended Pace: %s",
+            careerStr,
+            ui.careerLevelsCount or 0,
+            sessionStr,
+            blendStr
+        )
+        FBT:ShowTooltip(self, "Overall Pace / Career TTL", body)
+    end)
+    statOverallTTL:SetScript("OnLeave", function()
+        FBT:HideTooltip()
+        if OnCardLeave then
+            OnCardLeave()
+        end
+    end)
 
     ui.stats = stats
     ui.resetBtn = resetBtn
@@ -2837,6 +3948,7 @@ local function BuildStatsContent(parent)
     ui.statSessionTime = statSessionTime
     ui.statRested = statRested
     ui.statTTL = statTTL
+    ui.statOverallTTL = statOverallTTL
     ui.statXPHour = statXPHour
     ui.statKTL = statKTL
     ui.statQTL = statQTL
@@ -2847,10 +3959,10 @@ local function BuildStatsContent(parent)
     ui.statRepSess = statRepSess
     ui.statTimeLevel = statTimeLevel
     ui.statTimePlayed = statTimePlayed
-    ui.footer = footer
     ui.allStats = {
         statSessionXP, statSessionTime,
         statRested, statTTL,
+        statOverallTTL,
         statXPHour, statKTL,
         statQTL, statRepSess,
         statGoldHour, statGoldSess,
@@ -2861,7 +3973,8 @@ local function BuildStatsContent(parent)
 end
 
 local function MoverColor()
-    local accent = XiusUI and XiusUI.Media and XiusUI.Media.accent
+    local core = _G.XiusCore
+    local accent = core and core.Media and core.Media.accent
     if type(accent) == "table" then
         return accent[1] or 1, accent[2] or 0.82, accent[3] or 0
     end
@@ -3017,7 +4130,7 @@ function FBT:SetFrameMovers(unlocked)
 end
 
 function FBT:RegisterFrameMovers()
-    local core = XiusUI or _G.XiusCore
+    local core = _G.XiusCore or _G.XiusCoreSettingsLib
     if not core or not core.RegisterMover or not ui.card then
         return
     end
@@ -3072,13 +4185,6 @@ function FBT:CreateStatsPanel()
     title:SetTextColor(COLOR.gold[1], COLOR.gold[2], COLOR.gold[3], 1)
     title:SetText("Session Stats")
     ui.panelTitle = title
-
-    local moveHint = panel:CreateFontString(nil, "OVERLAY")
-    moveHint:SetPoint("BOTTOM", panel, "BOTTOM", 0, 6)
-    SetFont(moveHint, GameFontDisableSmall, 9)
-    moveHint:SetTextColor(COLOR.footer[1], COLOR.footer[2], COLOR.footer[3], 1)
-    moveHint:SetText("Shift + Left-drag to move")
-    ui.panelMoveHint = moveHint
 
     local grip = CreateFrame("Frame", nil, panel)
     grip:SetSize(6, 14)
@@ -3165,17 +4271,33 @@ function FBT:CreateUI()
     header:SetPoint("TOPRIGHT", -PAD, -PAD)
     header:SetHeight(HEADER_H)
 
-    local badge = CreateFrame("Frame", nil, header, "BackdropTemplate")
+    local badge = CreateFrame("Button", nil, header, "BackdropTemplate")
     badge:SetSize(BADGE_SIZE, BADGE_SIZE)
     badge:SetPoint("LEFT", 0, 0)
-    badge:SetBackdrop({
-        bgFile = "Interface\\Buttons\\WHITE8X8",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        edgeSize = 10,
-        insets = { left = 3, right = 3, top = 3, bottom = 3 },
-    })
+    badge:SetBackdrop(BADGE_BACKDROP)
     badge:SetBackdropColor(0.08, 0.08, 0.10, 0.95)
     badge:SetBackdropBorderColor(212 / 255, 175 / 255, 55 / 255, 1)
+    badge:EnableMouse(true)
+    badge:RegisterForClicks("LeftButtonUp")
+    badge:SetScript("OnEnter", function(self)
+        if OnCardEnter then
+            OnCardEnter()
+        end
+        ShowBadgeTooltip(self)
+    end)
+    badge:SetScript("OnLeave", function()
+        FBT:HideTooltip()
+        if OnCardLeave then
+            OnCardLeave()
+        end
+    end)
+    badge:SetScript("OnClick", function(self)
+        if ui.barKind == "rep" then
+            ToggleFactionPicker(self)
+        elseif FBT.db and not IsSeparateStatsMode() and FBT.db.expandTrigger == "CLICK" then
+            FBT:ToggleExpanded()
+        end
+    end)
     local gloss = badge:CreateTexture(nil, "ARTWORK")
     gloss:SetPoint("TOPLEFT", 4, -4)
     gloss:SetPoint("TOPRIGHT", -4, -4)
@@ -3270,6 +4392,7 @@ function FBT:CreateUI()
     card:SetScript("OnMouseDown", OnCardMouseDown)
     card:SetScript("OnMouseUp", OnCardMouseUp)
     card:SetScript("OnHide", function()
+        CloseFactionPicker()
         if ui.moving then
             OnCardDragStop()
         end
@@ -3295,6 +4418,7 @@ function FBT:CreateUI()
     end
     self:ApplyChrome()
     self:ApplyCardHeight()
+    self:ApplyScale()
     if self.db and self.db.enabled == false then
         self:ApplyVisibility()
     else
@@ -3351,15 +4475,21 @@ function OnXPUpdate(overrideLevel)
         end
         deltaGained = gained
         session.xpEarned = (session.xpEarned or 0) + gained
+        RecordCareerXP(lastLevel, math.max(0, lastMax - lastXP), lastMax)
+        if not session.awaitNewLevelXP and xp > 0 then
+            RecordCareerXP(level, xp, maxXP)
+        end
     elseif level < lastLevel then
         session.awaitNewLevelXP = nil
     elseif session.awaitNewLevelXP and (xp ~= lastXP or maxXP ~= lastMax) then
         deltaGained = math.max(0, xp)
         session.xpEarned = (session.xpEarned or 0) + deltaGained
         session.awaitNewLevelXP = nil
+        RecordCareerXP(level, deltaGained, maxXP)
     elseif xp > lastXP then
         deltaGained = xp - lastXP
         session.xpEarned = (session.xpEarned or 0) + deltaGained
+        RecordCareerXP(level, deltaGained, maxXP)
     end
 
     if deltaGained > 0 then
@@ -3398,8 +4528,8 @@ end
 
 local function FactionRow(index)
     if C_Reputation and C_Reputation.GetFactionDataByIndex then
-        local ok, data = pcall(C_Reputation.GetFactionDataByIndex, index)
-        if ok and type(data) == "table" and not ValueHidden(data) then
+        local data = C_Reputation.GetFactionDataByIndex(index)
+        if type(data) == "table" and not ValueHidden(data) then
             local id = data.factionID
             local standing = data.currentStanding
             if ValueHidden(id) or type(id) ~= "number" then
@@ -3410,14 +4540,17 @@ local function FactionRow(index)
             end
             local header = (not ValueHidden(data.isHeader)) and data.isHeader and true or false
             local watched = (not ValueHidden(data.isWatched)) and data.isWatched and true or false
-            return id, standing, header, watched
+            local reaction = (not ValueHidden(data.reaction)) and type(data.reaction) == "number" and data.reaction or 0
+            local nextThreshold = (not ValueHidden(data.nextReactionThreshold)) and type(data.nextReactionThreshold) == "number" and data.nextReactionThreshold or nil
+            local isMaxed = reaction >= 8 and standing ~= nil and nextThreshold ~= nil and standing >= nextThreshold
+            return id, standing, header, watched, isMaxed
         end
     end
     if not GetFactionInfo then
         return nil
     end
-    local ok, _, _, _, _, _, barValue, _, _, isHeader, _, _, isWatched, _, factionID = pcall(GetFactionInfo, index)
-    if not ok or ValueHidden(barValue) or ValueHidden(isHeader) or ValueHidden(factionID) then
+    local _, _, standingID, _, barMax, barValue, _, _, isHeader, _, _, isWatched, _, factionID = GetFactionInfo(index)
+    if ValueHidden(barValue) or ValueHidden(isHeader) or ValueHidden(factionID) then
         return nil
     end
     if type(factionID) ~= "number" then
@@ -3426,7 +4559,10 @@ local function FactionRow(index)
     if type(barValue) ~= "number" then
         barValue = nil
     end
-    return factionID, barValue, isHeader and true or false, (not ValueHidden(isWatched)) and isWatched and true or false
+    local reaction = (not ValueHidden(standingID)) and type(standingID) == "number" and standingID or 0
+    local maxV = (not ValueHidden(barMax)) and type(barMax) == "number" and barMax or nil
+    local isMaxed = reaction >= 8 and barValue ~= nil and maxV ~= nil and barValue >= maxV
+    return factionID, barValue, isHeader and true or false, (not ValueHidden(isWatched)) and isWatched and true or false, isMaxed
 end
 
 local function WatchFaction(index, factionID)
@@ -3445,14 +4581,18 @@ local function TrackReputationGain()
         factionScanReady = false
         return
     end
+    if FBT.db.autoTrackRepOnlyOutOfCombat and InCombatLockdown and InCombatLockdown() then
+        return
+    end
+    local ignoreMaxed = FBT.db.autoTrackRepIgnoreExalted ~= false
     local bestIndex, bestID
     local count = FactionTotal()
     for i = 1, count do
-        local id, standing, isHeader, isWatched = FactionRow(i)
+        local id, standing, isHeader, isWatched, isMaxed = FactionRow(i)
         if id and id > 0 and not isHeader and type(standing) == "number" then
             local previous = factionStanding[id]
             factionStanding[id] = standing
-            if factionScanReady and previous and standing > previous and not isWatched then
+            if factionScanReady and previous and standing > previous and not isWatched and not (ignoreMaxed and isMaxed) then
                 bestIndex = i
                 bestID = id
             end
@@ -3487,20 +4627,25 @@ function FBT:RegisterTracking()
     f:RegisterEvent("QUEST_TURNED_IN")
     f:RegisterEvent("PLAYER_ENTERING_WORLD")
     f:RegisterEvent("PLAYER_UPDATE_RESTING")
+    f:RegisterEvent("PLAYER_REGEN_DISABLED")
     f:RegisterEvent("PLAYER_REGEN_ENABLED")
     f:RegisterEvent("TIME_PLAYED_MSG")
     SafeRegisterEvent(f, "UPDATE_EXHAUSTION")
     SafeRegisterEvent(f, "MAJOR_FACTION_RENOWN_LEVEL_CHANGED")
     SafeRegisterEvent(f, "EDIT_MODE_LAYOUT_UPDATED")
+    SafeRegisterEvent(f, "UPDATE_INSTANCE_INFO")
+    SafeRegisterEvent(f, "ZONE_CHANGED_NEW_AREA")
     f:SetScript("OnEvent", function(_, event, ...)
         if event == "PLAYER_XP_UPDATE" then
             OnXPUpdate()
         elseif event == "PLAYER_LEVEL_UP" then
             local newLevel = ...
+            InvalidateMaxLevelCache()
             OnXPUpdate(newLevel)
             session.playedLevel = 0
             session.playedStamp = GetTime()
             RequestPlayedTime(true)
+            FBT:EnsureMaxLevelReputation(true)
         elseif event == "TIME_PLAYED_MSG" then
             local total, levelTime = ...
             session.playedTotal = PublicNumber(total, 0)
@@ -3512,6 +4657,7 @@ function FBT:RegisterTracking()
             TrackReputationGain()
             watchedCache = nil
             watchedCacheValid = false
+            FBT:EnsureMaxLevelReputation(true)
             CacheFactionBaseline(false)
             FBT:RequestRefresh()
         elseif event == "PLAYER_MONEY" then
@@ -3544,6 +4690,7 @@ function FBT:RegisterTracking()
                 end
             end
         elseif event == "QUEST_TURNED_IN" then
+            MarkCareerActivity()
             local _, xpReward = ...
             xpReward = PublicNumber(xpReward, 0)
             session.lastQuestAt = GetTime()
@@ -3557,16 +4704,35 @@ function FBT:RegisterTracking()
             end
         elseif event == "PLAYER_UPDATE_RESTING" or event == "UPDATE_EXHAUSTION" then
             FBT:RequestRefresh()
-        elseif event == "PLAYER_ENTERING_WORLD" then
-            watchedCache = nil
-            watchedCacheValid = false
+        elseif event == "PLAYER_ENTERING_WORLD" or event == "UPDATE_INSTANCE_INFO" or event == "ZONE_CHANGED_NEW_AREA" then
+            if event ~= "ZONE_CHANGED_NEW_AREA" then
+                watchedCache = nil
+                watchedCacheValid = false
+            end
+            if event == "PLAYER_ENTERING_WORLD" then
+                InvalidateMaxLevelCache()
+                if FBT.SyncProfileDB then
+                    FBT:SyncProfileDB()
+                end
+            end
+            SyncInstanceRunTimer()
+            if event == "UPDATE_INSTANCE_INFO" or event == "ZONE_CHANGED_NEW_AREA" then
+                FBT:RequestRefresh(true)
+                return
+            end
+            FBT:EnsureMaxLevelReputation(true)
             FBT:RestoreCardPosition()
             if IsSeparateStatsMode() then
                 FBT:RestorePanelPosition()
                 EnsureSeparateStatsAnchored()
             end
             FBT:StartSession()
+        elseif event == "PLAYER_REGEN_DISABLED" then
+            MarkCareerActivity()
         elseif event == "PLAYER_REGEN_ENABLED" or event == "EDIT_MODE_LAYOUT_UPDATED" then
+            if event == "PLAYER_REGEN_ENABLED" then
+                MarkCareerActivity()
+            end
             if event == "PLAYER_REGEN_ENABLED" and pendingLayout then
                 pendingLayout = false
                 FBT:RestoreCardPosition()

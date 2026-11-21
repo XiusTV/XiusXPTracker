@@ -1,0 +1,20 @@
+## Interface: 16001
+## Title: |cffd4a85aXius|r |cff66e0a3XP/Rep Tracker|r
+## IconTexture: Interface\Icons\INV_Misc_Note_02
+## Notes: HUD card for XP, reputation, and session stats. Type /xt
+## Author: Xius
+## Version: 1.6.0
+## SavedVariables: ForeverBarTrackerDB
+## SavedVariablesPerCharacter: ForeverBarTrackerCharDB
+## AllowLoadGameType: forever, camelot
+## Category: User Interface
+## Group: XiusCore
+## Dependencies: XiusCore
+## RequiredDeps: XiusCore
+## X-Part-Of: XiusCore
+## ExcludeLoadGameType: classic
+
+Config.lua
+Core.lua
+Shell.lua
+Libs/SettingsGlue.lua

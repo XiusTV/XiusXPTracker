@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.6.0
+Everything new since the GitHub **1.5.3** release (2026-11-16).
+
+### Added
+- **Instance run timer** — `INSTANCE TIME` tracks each dungeon/raid entry separately from session time, with soft-reset / new-instance detection (`resetInstanceTimerOnEnter`)
+- **Max-level reputation fallback** — at cap, auto-picks the watched faction or the highest non-Exalted reputation (Friendship / Renown / Paragon aware)
+- **Standing badge + faction picker** — click the standing badge for AUTO (highest non-Exalted) or a manual faction; scrollable list with mousewheel on rows
+- **Career pace / Overall TTL** — per-character career XP stats (`ForeverBarTrackerCharDB`) blend into a long-term time-to-level estimate
+- **Card scale** slider and richer auto-track options (ignore Exalted, only switch out of combat)
+- Dedicated **`XiusXPRepTracker_Forever.toc`** (Interface `16001`) plus modern interfaces `120100` / `120105` / `120107`
+- Addon icon texture and Xius-styled TOC title
+
+### Fixed / Hardened
+- Max-level auto-rep no longer sticks on an Exalted watched faction when `SetWatchedFaction` is blocked (combat / API) — displays the scanned best faction directly
+- Secret `IsInInstance` results no longer wipe a live instance timer on `/reload`
+- Collapsed card ↔ expanded drawer seam stays gap-free when card height changes
+- Faction / standing / GUID / unit reads use Forever secret-value guards throughout
+- Strict **XiusCore** dependency (no deprecated `XiusUI` fallback)
+
+### Changed
+- Settings page regrouped (Card, Lock & Expansion, Separate Stats Box, Bars & Colors, Auto Faction Tracking, Instance Run Timer, Session Stats)
+- Saved-variables schema bumped to **dbVersion 14**
+
 ## 1.5.3
 - Requires Xius Core. If Xius Core is not loaded, the addon stays quiet instead of erroring
 - Unlock Frames in Xius Core highlights the XP card and stats box so they can be dragged. Locking saves the position and hides the handle

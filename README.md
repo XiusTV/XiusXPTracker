@@ -7,7 +7,7 @@ Settings and Unlock Frames live in **[Xius Core](https://www.curseforge.com/wow/
 **Folder name:** `XiusXPRepTracker`  
 **Interfaces:** `120105` (modern) · `16001` (Forever)  
 **Commands:** `/xt` · `/xiusxp` · `/xxp` · `/xrep` · `/xxr`  
-**Version:** `1.5.3`
+**Version:** `1.6.0`
 
 Loads on modern WoW and Forever. It does not load on Classic. Xius Core has to be installed and enabled.
 
@@ -18,7 +18,8 @@ Loads on modern WoW and Forever. It does not load on Classic. Xius Core has to b
 - Replaces the stock XP and reputation tracking bars.
 - Shows level, the XP or watched-faction bar, percent, and a rested overlay.
 - Watched reputation includes Friendship, Renown, and Paragon when the client provides them.
-- Bar style, height, and colors come from the Xius Core settings page.
+- At max level, auto-falls back to the highest non-Exalted faction (or your watched one). Standing badge opens a faction picker.
+- Bar style, height, scale, and colors come from the Xius Core settings page.
 - The card can be turned off. The normal Blizzard bars come back.
 
 ### Stats
@@ -28,7 +29,7 @@ Stats can sit in two places:
 - **On the card (default).** Hover or click to expand.
 - **Separate stats box.** A compact panel that stays visible. The card stays collapsed.
 
-Tracked metrics include session XP and time, time played this level, total time played, rested XP, time to level, XP per hour, kills to level, quests to level, gold, and reputation rates. Each metric can be hidden.
+Tracked metrics include session XP and time, **instance run time**, time played this level, total time played, rested XP, time to level, **overall TTL** (career pace), XP per hour, kills to level, quests to level, gold, and reputation rates. Each metric can be hidden.
 
 ### Moving
 

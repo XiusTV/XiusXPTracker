@@ -1,6 +1,6 @@
-local _, NS = ...
+local addonName, ns = ...
 
-local XiusCore = _G.XiusCore or _G.XiusUI or _G.XiusCoreSettingsLib
+local XiusCore = _G.XiusCore or _G.XiusCoreSettingsLib
 if not XiusCore and C_AddOns and C_AddOns.IsAddOnLoaded then
     local ok, loaded = pcall(C_AddOns.IsAddOnLoaded, "XiusCore")
     XiusCore = ok and loaded and true or false
@@ -13,6 +13,9 @@ if not XiusCore then
     return
 end
 
-if XiusUI and XiusUI.RegisterModule then
-    XiusUI:RegisterModule("XPRep", NS)
+do
+    local core = _G.XiusCore
+    if core and core.RegisterModule then
+        core:RegisterModule("XPRep", ns)
+    end
 end
